@@ -1,4 +1,5 @@
 using API.Helpers;
+using API.Telemetry;
 using API.Services.Abstract;
 using Domain.DTO.Requests;
 using Domain.Enums;
@@ -8,6 +9,7 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using FromBodyAttribute = Microsoft.Azure.Functions.Worker.Http.FromBodyAttribute;
+using System.Diagnostics;
 
 namespace API.Functions;
 
@@ -29,6 +31,8 @@ public class ActivityFunctions
     [Function(nameof(GetActivities))]
     public async Task<IActionResult> GetActivities([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "activities")] HttpRequest req)
     {
+        using var activity = APITelemetry.StartActivity("ActivityFunctions.GetActivities");
+        activity?.SetTag("api.function.name", nameof(GetActivities));
         try
         {
             _logger.LogInformation("Processing activities list request.");
@@ -37,6 +41,8 @@ public class ActivityFunctions
         }
         catch (Exception ex)
         {
+            activity?.AddException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to retrieve activities.");
             return new StatusCodeResult(500);
         }
@@ -45,6 +51,8 @@ public class ActivityFunctions
     [Function(nameof(CacheActivities))]
     public async Task CacheActivities([TimerTrigger("0 0 0 * * *")] TimerInfo timer)
     {
+        using var activity = APITelemetry.StartActivity("ActivityFunctions.CacheActivities");
+        activity?.SetTag("api.function.name", nameof(CacheActivities));
         try
         {
             _logger.LogInformation("Caching all activities (timer trigger).");
@@ -52,6 +60,8 @@ public class ActivityFunctions
         }
         catch (Exception ex)
         {
+            activity?.AddException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error caching activities during scheduled run.");
         }
     }
@@ -59,6 +69,10 @@ public class ActivityFunctions
     [Function(nameof(GetLeaderboard))]
     public async Task<IActionResult> GetLeaderboard([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "activities/leaderboards/{leaderboardType}/{activityId}")] HttpRequest req, string leaderboardType, long activityId)
     {
+        using var activity = APITelemetry.StartActivity("ActivityFunctions.GetLeaderboard");
+        activity?.SetTag("api.function.name", nameof(GetLeaderboard));
+        activity?.SetTag("api.activity.id", activityId);
+        activity?.SetTag("api.leaderboard.type", leaderboardType);
         try
         {
             _logger.LogInformation("Retrieving completions leaderboard for {ActivityId}.", activityId);
@@ -83,6 +97,8 @@ public class ActivityFunctions
         }
         catch (Exception ex)
         {
+            activity?.AddException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error retrieving completions leaderboard for {ActivityId}.", activityId);
             return new StatusCodeResult(500);
         }
@@ -91,6 +107,10 @@ public class ActivityFunctions
     [Function(nameof(SearchForPlayerLeaderboard))]
     public async Task<IActionResult> SearchForPlayerLeaderboard([HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "activities/leaderboards/{leaderboardType}/{activityId}/search")] HttpRequest req, string leaderboardType, long activityId, [FromBody] SearchRequest request)
     {
+        using var activity = APITelemetry.StartActivity("ActivityFunctions.SearchForPlayerLeaderboard");
+        activity?.SetTag("api.function.name", nameof(SearchForPlayerLeaderboard));
+        activity?.SetTag("api.activity.id", activityId);
+        activity?.SetTag("api.leaderboard.type", leaderboardType);
         try
         {
             _logger.LogInformation("Searching for player leaderboard entries for activity {ActivityId}.", activityId);
@@ -113,6 +133,8 @@ public class ActivityFunctions
         }
         catch (Exception ex)
         {
+            activity?.AddException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error searching for player leaderboard entries for activity {ActivityId}.", activityId);
             return new StatusCodeResult(500);
         }
@@ -121,12 +143,16 @@ public class ActivityFunctions
     [Function(nameof(BuildActivityMappings))]
     public async Task BuildActivityMappings([TimerTrigger("0 0 11 * * *")] TimerInfo timer)
     {
+        using var activity = APITelemetry.StartActivity("ActivityFunctions.BuildActivityMappings");
+        activity?.SetTag("api.function.name", nameof(BuildActivityMappings));
         try
         {
             await _destiny2Service.GroupActivityDuplicates();
         }
         catch (Exception ex)
         {
+            activity?.AddException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error Grouping activities.");
         }
     }
