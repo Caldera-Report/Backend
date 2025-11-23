@@ -22,6 +22,8 @@ env:
 jobs:
   build-and-deploy:
     runs-on: windows-latest
+    env:
+      ConnectionStrings__PostgreSqlConnectionString: ${{ secrets.DOMAIN_DB_CONNECTION_STRING }}
     permissions:
       id-token: write #This is required for requesting the JWT
       contents: read #This is required for actions/checkout
