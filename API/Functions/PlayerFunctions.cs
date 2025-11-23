@@ -1,4 +1,5 @@
 using API.Helpers;
+using API.Telemetry;
 using API.Models.Responses;
 using API.Services.Abstract;
 using Domain.DTO.Requests;
@@ -10,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FromBodyAttribute = Microsoft.Azure.Functions.Worker.Http.FromBodyAttribute;
+using System.Diagnostics;
 
 namespace API.Functions;
 
@@ -31,6 +33,9 @@ public class PlayerFunctions
     [Function(nameof(SearchForPlayer))]
     public async Task<IActionResult> SearchForPlayer([HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "players/search")] HttpRequest req, [FromBody] SearchRequest request)
     {
+        using var activity = APITelemetry.StartActivity("PlayerFunctions.SearchForPlayer");
+        activity?.SetTag("api.function.name", nameof(SearchForPlayer));
+        activity?.SetTag("api.player.query", request.playerName);
         var playerName = request.playerName;
         _logger.LogInformation("Search request received for player {PlayerName}.", playerName);
 
@@ -73,6 +78,8 @@ public class PlayerFunctions
         }
         catch (Exception ex)
         {
+            activity?.AddException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error searching for player {PlayerName}.", playerName);
             return new StatusCodeResult(500);
         }
@@ -81,6 +88,9 @@ public class PlayerFunctions
     [Function(nameof(GetPlayer))]
     public async Task<IActionResult> GetPlayer([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "players/{membershipId}")] HttpRequest req, long membershipId)
     {
+        using var activity = APITelemetry.StartActivity("PlayerFunctions.GetPlayer");
+        activity?.SetTag("api.function.name", nameof(GetPlayer));
+        activity?.SetTag("api.player.membershipId", membershipId);
         _logger.LogInformation("Player details requested for membership {MembershipId}.", membershipId);
 
         if (membershipId <= 0)
@@ -96,6 +106,8 @@ public class PlayerFunctions
         }
         catch (Exception ex)
         {
+            activity?.AddException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error retrieving player {MembershipId}.", membershipId);
             return new StatusCodeResult(500);
         }
@@ -104,6 +116,10 @@ public class PlayerFunctions
     [Function(nameof(GetPlayerStatsForActivity))]
     public async Task<IActionResult> GetPlayerStatsForActivity([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "players/{membershipId}/stats/{activityId}")] HttpRequest req, long membershipId, long activityId)
     {
+        using var activity = APITelemetry.StartActivity("PlayerFunctions.GetPlayerStatsForActivity");
+        activity?.SetTag("api.function.name", nameof(GetPlayerStatsForActivity));
+        activity?.SetTag("api.player.membershipId", membershipId);
+        activity?.SetTag("api.activity.id", activityId);
         _logger.LogInformation("Stats request received for player {MembershipId} and activity {ActivityId}.", membershipId, activityId);
 
         try
@@ -113,6 +129,8 @@ public class PlayerFunctions
         }
         catch (Exception ex)
         {
+            activity?.AddException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error getting stats for player {MembershipId} and activity {ActivityId}.", membershipId, activityId);
             return new StatusCodeResult(500);
         }
@@ -121,6 +139,9 @@ public class PlayerFunctions
     [Function(nameof(LoadPlayerActivities))]
     public async Task<IActionResult> LoadPlayerActivities([HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "players/{membershipId}/load")] HttpRequest req, long membershipId)
     {
+        using var activity = APITelemetry.StartActivity("PlayerFunctions.LoadPlayerActivities");
+        activity?.SetTag("api.function.name", nameof(LoadPlayerActivities));
+        activity?.SetTag("api.player.membershipId", membershipId);
         _logger.LogInformation("Activities load requested for player {MembershipId}.", membershipId);
 
         if (membershipId <= 0)
@@ -148,6 +169,8 @@ public class PlayerFunctions
         }
         catch (Exception ex)
         {
+            activity?.AddException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error loading activities for player {MembershipId}.", membershipId);
             return new StatusCodeResult(500);
         }
