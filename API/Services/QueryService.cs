@@ -5,6 +5,7 @@ using Domain.Data;
 using Domain.DB;
 using Domain.DTO.Responses;
 using Domain.Enums;
+using Facet.Extensions;
 using Facet.Extensions.EFCore;
 using Facet.Mapping;
 using Microsoft.EntityFrameworkCore;
@@ -67,8 +68,8 @@ namespace API.Services
                 var activities = await _context.OpTypes
                     .Include(o => o.Activities.Where(a => a.Enabled))
                     .Where(o => o.Activities.Any(a => a.Enabled))
-                    .ToFacetsAsync<OpTypeDto>();
-                await _cache.StringSetAsync("activities:all", JsonSerializer.SerializeToUtf8Bytes(activities), new TimeSpan(1, 1, 0, 0));
+                    .ToListAsync();
+                await _cache.StringSetAsync("activities:all", JsonSerializer.SerializeToUtf8Bytes(activities.Select(a => a.ToFacet<OpTypeDto>()).ToList()), new TimeSpan(1, 1, 0, 0));
             }
             catch (Exception ex)
             {
