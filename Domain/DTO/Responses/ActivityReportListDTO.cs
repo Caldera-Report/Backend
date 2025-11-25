@@ -3,10 +3,12 @@ using API.Models.Responses;
 
 namespace Domain.DTO.Responses
 {
-    public class ActivityReportListDTO
+    public class ActivityReportListDto
     {
-        public List<ActivityReportPlayerFacet> Reports { get; set; } = new();
+        public List<ActivityReportPlayerDto> Reports { get; set; } = new();
         public TimeSpan Average { get; set; }
-        public ActivityReportPlayerFacet? Best { get; set; }
+        public ActivityReportPlayerDto? Best { get; set; }
+        public ActivityReportPlayerDto? Recent { get; set; }
+        public int CountCompleted { get; set; }
     }
 }
