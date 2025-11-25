@@ -5,6 +5,8 @@ using Domain.Data;
 using Domain.DB;
 using Domain.DTO.Responses;
 using Domain.Enums;
+using Facet.Extensions.EFCore;
+using Facet.Mapping;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
@@ -26,35 +28,6 @@ namespace API.Services
             _logger = logger;
         }
 
-        public async Task<List<PlayerSearchDto>> GetAllPlayersAsync()
-        {
-            try
-            {
-                return await _context.Players
-                    .Select(PlayerSearchDto.Projection)
-                    .ToListAsync();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error retrieving players from database");
-                throw;
-            }
-        }
-
-        public async Task<List<Player>> GetAllPlayersFromDb()
-        {
-            try
-            {
-                return await _context.Players
-                    .ToListAsync();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error retrieving players from database");
-                throw;
-            }
-        }
-
         public async Task<List<OpTypeDto>> GetAllActivitiesAsync()
         {
             try
@@ -62,7 +35,7 @@ namespace API.Services
                 var activities = await _cache.StringGetAsync("activities:all");
                 if (activities.HasValue)
                 {
-                    return JsonSerializer.Deserialize<List<OpTypeDto>>(activities)
+                    return JsonSerializer.Deserialize<List<OpTypeDto>>(activities.ToString())
                         ?? new List<OpTypeDto>();
                 }
                 else
@@ -71,7 +44,7 @@ namespace API.Services
                     activities = await _cache.StringGetAsync("activities:all");
                     if (activities.HasValue)
                     {
-                        return JsonSerializer.Deserialize<List<OpTypeDto>>(activities)
+                        return JsonSerializer.Deserialize<List<OpTypeDto>>(activities.ToString())
                             ?? new List<OpTypeDto>();
                     }
                     else
@@ -94,8 +67,7 @@ namespace API.Services
                 var activities = await _context.OpTypes
                     .Include(o => o.Activities.Where(a => a.Enabled))
                     .Where(o => o.Activities.Any(a => a.Enabled))
-                    .Select(OpTypeDto.Projection)
-                    .ToListAsync();
+                    .ToFacetsAsync<OpTypeDto>();
                 await _cache.StringSetAsync("activities:all", JsonSerializer.SerializeToUtf8Bytes(activities), new TimeSpan(1, 1, 0, 0));
             }
             catch (Exception ex)
@@ -110,10 +82,11 @@ namespace API.Services
             try
             {
                 var player = await _context.Players
-                    .FirstOrDefaultAsync(p => p.Id == id);
+                    .Where(p => p.Id == id)
+                    .FirstFacetAsync<PlayerDto>();
                 if (player is null)
                     throw new Exception("Player not found");
-                return new PlayerDto(player);
+                return player;
             }
             catch (Exception ex)
             {
@@ -139,23 +112,24 @@ namespace API.Services
             }
         }
 
-        public async Task<ActivityReportListDTO> GetPlayerReportsForActivityAsync(long playerId, long activityId)
+        public async Task<ActivityReportListDto> GetPlayerReportsForActivityAsync(long playerId, long activityId)
         {
             try
             {
                 var reports = await _context.ActivityReportPlayers
-                    .Include(arp => arp.ActivityReport)
-                    .Where(arp => arp.ActivityReport.ActivityId == activityId && arp.PlayerId == playerId)
-                    .Select(ActivityReportPlayerFacet.Projection)
-                    .ToListAsync();
+                    .Where(arp => arp.ActivityId == activityId && arp.PlayerId == playerId)
+                    .ToFacetsAsync<ActivityReportPlayerDto>();
                 var averageMs = reports.Count(r => r.Completed) > 0 ? reports.Where(r => r.Completed).Select(r => r.Duration.TotalMilliseconds).Average() : 0;
                 var average = TimeSpan.FromMilliseconds(averageMs);
                 var fastest = reports.OrderBy(r => r.Duration).FirstOrDefault(r => r.Completed);
-                return new ActivityReportListDTO
+                var recent = reports.OrderByDescending(r => r.Date).FirstOrDefault();
+                return new ActivityReportListDto
                 {
-                    Reports = reports,
+                    Reports = reports.OrderByDescending(arpd => arpd.Date).ToList(),
                     Average = average,
-                    Best = fastest
+                    Best = fastest,
+                    Recent = recent,
+                    CountCompleted = reports.Count(r => r.Completed)
                 };
             }
             catch (Exception ex)
@@ -174,7 +148,7 @@ namespace API.Services
                     var cachedData = await _cache.StringGetAsync($"leaderboard:activity:{activityId}:type:{(int)type}");
                     if (cachedData.HasValue)
                     {
-                        var leaderboardData = JsonSerializer.Deserialize<List<PlayerLeaderboard>>(cachedData!);
+                        var leaderboardData = JsonSerializer.Deserialize<List<PlayerLeaderboard>>(cachedData.ToString()!);
                         if (leaderboardData != null)
                         {
                             return leaderboardData
@@ -248,9 +222,9 @@ namespace API.Services
             {
                 var results = await _context.Players
                     .Where(p => EF.Functions.ILike(p.FullDisplayName, $"%{query}%"))
-                    .Select(PlayerSearchDto.Projection)
+                    .OrderBy(p => p.FullDisplayName)
                     .Take(25)
-                    .ToListAsync();
+                    .ToFacetsAsync<PlayerSearchDto>();
                 return results;
             }
             catch (Exception ex)

@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS restore
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS restore
 WORKDIR /src
 ARG BUILD_CONFIGURATION=Release
 COPY ["Crawler.Frontend/Crawler.Frontend.csproj", "Crawler.Frontend/"]
@@ -11,7 +11,7 @@ COPY . .
 WORKDIR /src/Crawler.Frontend
 RUN dotnet publish "Crawler.Frontend.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false --no-restore
 
-FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 # Listen on 8081 by default; override ASPNETCORE_URLS at runtime if needed.
 ENV ASPNETCORE_URLS=http://+:8081 \

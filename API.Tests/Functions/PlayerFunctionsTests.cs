@@ -152,9 +152,9 @@ public class PlayerFunctionsTests
     [Fact]
     public async Task GetPlayerStatsForActivity_ReturnsCachedJson()
     {
-        var reports = new ActivityReportListDTO
+        var reports = new ActivityReportListDto
         {
-            Reports = new List<ActivityReportPlayerFacet> { new() }
+            Reports = new List<ActivityReportPlayerDto> { new() }
         };
         _queryService.Setup(q => q.GetPlayerReportsForActivityAsync(1, 2)).ReturnsAsync(reports);
         var context = new DefaultHttpContext();

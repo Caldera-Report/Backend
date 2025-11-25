@@ -185,8 +185,8 @@ namespace API.Services
         {
             var entries = await _cache.HashGetAllAsync("activityHashMappings");
             var activityHashMap = entries.ToDictionary(
-                x => long.TryParse(x.Name, out var nameHash) ? nameHash : 0,
-                x => long.TryParse(x.Value, out var valueHash) ? valueHash : 0
+                x => long.TryParse(x.Name.ToString(), out var nameHash) ? nameHash : 0,
+                x => long.TryParse(x.Value.ToString(), out var valueHash) ? valueHash : 0
             );
 
             _context.Players.Update(player);

@@ -1,8 +1,6 @@
 using Crawler.Services.Abstract;
 using Crawler.Telemetry;
 using Domain.Data;
-using Domain.DB;
-using Domain.DestinyApi;
 using Domain.DTO;
 using Domain.Enums;
 using Microsoft.EntityFrameworkCore;
@@ -104,11 +102,11 @@ namespace Crawler.Services
                 INSERT INTO "PlayerCrawlQueue"
                     ("Id","PlayerId","EnqueuedAt","ProcessedAt","Status","Attempts")
                 SELECT
-                    gen_random_uuid(),            -- or uuid_generate_v4() if that's what your DB uses
+                    gen_random_uuid(),  
                     p."Id",
                     NOW(),
                     NULL,
-                    {0},                          -- PlayerQueueStatus.Queued
+                    {0},                          
                     0
                 FROM "Players" p;
                 """,
@@ -126,8 +124,8 @@ namespace Crawler.Services
         {
             var entries = await cache.HashGetAllAsync("activityHashMappings");
             return entries.ToDictionary(
-                x => long.TryParse(x.Name, out var nameHash) ? nameHash : 0,
-                x => long.TryParse(x.Value, out var valueHash) ? valueHash : 0
+                x => long.TryParse(x.Name.ToString(), out var nameHash) ? nameHash : 0,
+                x => long.TryParse(x.Value.ToString(), out var valueHash) ? valueHash : 0
             );
         }
     }
