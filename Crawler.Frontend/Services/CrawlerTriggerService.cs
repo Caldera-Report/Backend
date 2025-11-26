@@ -4,7 +4,7 @@ namespace Crawler.Frontend.Services;
 
 public class CrawlerTriggerService : ICrawlerTriggerService
 {
-    private const string ChannelName = "crawler:pipeline:run";
+    private readonly RedisChannel ChannelName = new("crawler:pipeline:run", RedisChannel.PatternMode.Auto);
     private readonly IConnectionMultiplexer _redis;
 
     public CrawlerTriggerService(IConnectionMultiplexer redis)
