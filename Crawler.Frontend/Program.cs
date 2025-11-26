@@ -26,12 +26,10 @@ var app = builder.Build();
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
 {
-    // HSTS for production
     app.UseHsts();
 }
-
-app.UseHttpsRedirection();
-
+else
+    app.UseHttpsRedirection();
 
 app.UseAntiforgery();
 
