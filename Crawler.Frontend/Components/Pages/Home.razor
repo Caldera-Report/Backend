@@ -100,14 +100,26 @@
     </div>
 
     <div class="card">
-        <div class="card-header">Previous run summary</div>
+        <div class="card-header">Activity Reports</div>
         <div class="card-body">
-            <dl class="row mb-0">
-                <dt class="col-sm-4 col-lg-3">Last run started</dt>
-                <dd class="col-sm-8 col-lg-3">@FormatTimestamp(_status.LastRunStartedAt)</dd>
-                <dt class="col-sm-4 col-lg-3">Last run finished</dt>
-                <dd class="col-sm-8 col-lg-3">@FormatTimestamp(_status.LastRunFinishedAt)</dd>
-            </dl>
+            <div class="d-flex justify-content-between align-items-baseline mb-3">
+                <div>
+                    <div class="text-muted">Processed</div>
+                    <div class="fs-3 fw-semibold">@FormatNumber(_status.CompletedActivityReports)</div>
+                </div>
+                <div class="text-end">
+                    <div class="text-muted">Total</div>
+                    <div class="fs-3 fw-semibold">@FormatNumber(_status.TotalActivityReports)</div>
+                </div>
+            </div>
+            <div class="progress" role="progressbar" aria-valuenow="@_status.ActivityReportCompletionPercent" aria-valuemin="0" aria-valuemax="100">
+                <div class="progress-bar @( _status.ActivityReportCompletionPercent > 0 ? "progress-anim" : string.Empty)" style="width: @GetClampedActivityReportProgress()%">
+                    @GetClampedActivityReportProgressDisplay()%
+                </div>
+            </div>
+            <div class="d-flex justify-content-between text-muted mt-2">
+                <div>Pending: @FormatNumber(_status.PendingActivityReports)</div>
+            </div>
         </div>
     </div>
 </div>
@@ -180,7 +192,23 @@
         return pct.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    private string GetClampedActivityReportProgress()
+    {
+        var pct = double.IsNaN(ActivityReportPercent) ? 0 : ActivityReportPercent;
+        pct = Math.Clamp(pct, 0, 100);
+        return pct.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private string GetClampedActivityReportProgressDisplay()
+    {
+        var pct = double.IsNaN(ActivityReportPercent) ? 0 : ActivityReportPercent;
+        pct = Math.Clamp(pct, 0, 100);
+        return pct.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     private double CrawlerPercent => _status.CompletionPercent;
+
+    private double ActivityReportPercent => _status.ActivityReportCompletionPercent;
 
     private string GetStatusClass() => _status.Status?.ToLowerInvariant() switch
     {

@@ -17,16 +17,9 @@ namespace Crawler.Tests;
 public class PlayerCrawlerTests
 {
     [Fact]
-    public async Task RunAsync_EnqueuesCharacterWorkItemsForRecentCharacters()
+    public async Task GetCharactersForPlayer_ReturnsCharactersForValidPlayer()
     {
         const long playerId = 12345;
-        var databaseMock = new Mock<IDatabase>();
-        databaseMock.Setup(db => db.ListLength("last-update-started", CommandFlags.None)).Returns(0);
-
-        var multiplexerMock = new Mock<IConnectionMultiplexer>();
-        multiplexerMock
-            .Setup(m => m.GetDatabase(Moq.It.IsAny<int>(), Moq.It.IsAny<object>()))
-            .Returns(databaseMock.Object);
 
         var dbName = Guid.NewGuid().ToString();
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -43,11 +36,6 @@ public class PlayerCrawlerTests
                 DisplayNameCode = 7777,
                 FullDisplayName = "Guardian#7777",
                 NeedsFullCheck = false
-            });
-            seedContext.PlayerCrawlQueue.Add(new PlayerCrawlQueue
-            {
-                PlayerId = playerId,
-                Status = PlayerQueueStatus.Queued
             });
             await seedContext.SaveChangesAsync();
         }
@@ -104,37 +92,25 @@ public class PlayerCrawlerTests
         var playerCharacterWorkCount = new ConcurrentDictionary<long, int>();
 
         var crawler = new PlayerCrawler(
-            multiplexerMock.Object,
             clientMock.Object,
             channel.Writer,
             NullLogger<PlayerCrawler>.Instance,
             contextFactory,
             playerCharacterWorkCount);
 
-        using var cts = new CancellationTokenSource();
-        var runTask = crawler.RunAsync(cts.Token);
+        await using var context = await contextFactory.CreateDbContextAsync();
+        var characters = await crawler.GetCharactersForPlayer(playerId, 2, context, CancellationToken.None);
 
-        var workItem = await channel.Reader.ReadAsync();
-        Assert.Equal(playerId, workItem.PlayerId);
-        Assert.Equal("recent-character", workItem.CharacterId);
+        Assert.Equal(2, characters.Count);
+        Assert.Contains("recent-character", characters.Keys);
+        Assert.Contains("old-character", characters.Keys);
 
-        cts.Cancel();
-        await runTask;
-
-        clientMock.Verify(client => client.GetCharactersForPlayer(playerId, 2, Moq.It.IsAny<CancellationToken>()), Times.AtLeastOnce);
+        clientMock.Verify(client => client.GetCharactersForPlayer(playerId, 2, Moq.It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
     public async Task CheckPlayerNameAndEmblem_UpdatesPlayerWhenDisplayNameChanged()
     {
-        var databaseMock = new Mock<IDatabase>();
-        databaseMock.Setup(db => db.ListLength("last-update-started", CommandFlags.None)).Returns(0);
-
-        var multiplexerMock = new Mock<IConnectionMultiplexer>();
-        multiplexerMock
-            .Setup(m => m.GetDatabase(Moq.It.IsAny<int>(), Moq.It.IsAny<object>()))
-            .Returns(databaseMock.Object);
-
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
@@ -161,7 +137,6 @@ public class PlayerCrawlerTests
         var playerCharacterWorkCount = new ConcurrentDictionary<long, int>();
 
         var crawler = new PlayerCrawler(
-            multiplexerMock.Object,
             clientMock.Object,
             channel.Writer,
             NullLogger<PlayerCrawler>.Instance,

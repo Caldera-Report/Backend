@@ -12,6 +12,8 @@ namespace Domain.DB
         public string FullDisplayName { get; set; } = null!;
         public string? LastPlayedCharacterEmblemPath { get; set; }
         public string? LastPlayedCharacterBackgroundPath { get; set; }
+        public DateTime? LastCrawlStarted { get; set; }
+        public DateTime? LastCrawlCompleted { get; set; }
         public bool NeedsFullCheck { get; set; }
 
         public ICollection<ActivityReportPlayer> ActivityReportPlayers { get; set; }

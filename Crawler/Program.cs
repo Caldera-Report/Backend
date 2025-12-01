@@ -1,31 +1,73 @@
 using API.Clients;
 using API.Clients.Abstract;
-using Crawler.Jobs;
 using Crawler.Registries;
 using Crawler.Services;
-using Crawler.Services.Abstract;
-using Crawler.Telemetry;
 using Domain.Configuration;
 using Domain.Data;
+using Domain.DTO;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Hosting;
-using Npgsql;
-using OpenTelemetry;
+using Microsoft.Extensions.Caching.Memory;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
-using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
-using Quartz;
 using StackExchange.Redis;
-using System.Diagnostics;
+using System.Collections.Concurrent;
+using System.Threading.Channels;
 
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
-ConfigureOpenTelemetry(builder);
+ConfigureOpenTelemetryLogs(builder);
+
+void ConfigureOpenTelemetryLogs(HostApplicationBuilder b)
+{
+    var cfg = b.Configuration;
+    var baseEndpoint = cfg["OpenTelemetry:Endpoint"]?.TrimEnd('/');
+
+    if (string.IsNullOrWhiteSpace(baseEndpoint))
+    {
+        b.Logging.AddConsole();
+        return;
+    }
+
+    var logsEndpoint = new Uri($"{baseEndpoint}/v1/logs");
+    string? headers = cfg["OpenTelemetry:Headers"];
+
+    var serviceName = b.Environment.ApplicationName ?? "Crawler";
+    var serviceVersion = typeof(PlayerCrawler).Assembly.GetName().Version?.ToString() ?? "unknown";
+
+    b.Logging.AddOpenTelemetry(options =>
+    {
+        options.IncludeScopes = true;
+        options.ParseStateValues = true;
+        options.IncludeFormattedMessage = true;
+
+        options.SetResourceBuilder(ResourceBuilder.CreateDefault()
+            .AddService(serviceName, serviceVersion, Environment.MachineName)
+            .AddAttributes(new[]
+            {
+                new KeyValuePair<string, object>("deployment.environment", b.Environment.EnvironmentName),
+            }));
+
+        options.AddOtlpExporter(opts =>
+        {
+            opts.Endpoint = logsEndpoint;
+            opts.Protocol = OtlpExportProtocol.HttpProtobuf;
+            if (!string.IsNullOrWhiteSpace(headers))
+                opts.Headers = headers;
+        });
+    });
+
+    b.Logging.AddFilter<OpenTelemetryLoggerProvider>(filter =>
+    {
+        return filter >= LogLevel.Warning;
+    });
+
+    b.Logging.AddFilter("Microsoft.Extensions.Logging.Console",
+        b.Environment.IsDevelopment() ? LogLevel.Debug : LogLevel.Information);
+}
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(
     ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("RedisConnectionString") ?? throw new InvalidOperationException("Redis connection string is not configured"))
@@ -53,130 +95,45 @@ builder.Services.AddOptions<Destiny2Options>()
 
 builder.Services.AddSingleton<RateLimiterRegistry>();
 builder.Services.AddHttpClient<IDestiny2ApiClient, Destiny2ApiClient>();
-builder.Services.AddSingleton<PipelineOrchestrator>();
-builder.Services.AddSingleton<ILeaderboardService, LeaderboardService>();
-builder.Services.AddHostedService<RedisCrawlerTriggerListener>();
+builder.Services.AddMemoryCache();
 
-// ---- Quartz ----
-builder.Services.AddQuartz(quartz =>
-{
-    var jobKey = new JobKey("PipelineOrchestratorJob");
-    quartz.AddJob<PipelineOrchestratorJob>(opts => opts.WithIdentity(jobKey));
+// Shared state
+var playerCharacterWorkCount = new ConcurrentDictionary<long, int>();
 
-    quartz.AddTrigger(opts => opts
-        .ForJob(jobKey)
-        .WithIdentity("PipelineOrchestratorTrigger")
-        .WithSchedule(CronScheduleBuilder.DailyAtHourAndMinute(0, 0))); // midnight UTC
-});
-builder.Services.AddQuartzHostedService(options => options.WaitForJobsToComplete = true);
+// Channels
+var characterChannel = Channel.CreateBounded<CharacterWorkItem>(new BoundedChannelOptions(10) { FullMode = BoundedChannelFullMode.Wait });
+
+builder.Services.AddSingleton(characterChannel.Reader);
+builder.Services.AddSingleton(characterChannel.Writer);
+
+// Background services
+builder.Services.AddHostedService(sp =>
+    new PlayerCrawler(
+        sp.GetRequiredService<IDestiny2ApiClient>(),
+        characterChannel.Writer,
+        sp.GetRequiredService<ILogger<PlayerCrawler>>(),
+        sp.GetRequiredService<IDbContextFactory<AppDbContext>>(),
+        playerCharacterWorkCount));
+
+builder.Services.AddHostedService(sp =>
+    new CharacterCrawler(
+        sp.GetRequiredService<IDestiny2ApiClient>(),
+        characterChannel.Reader,
+        sp.GetRequiredService<ILogger<CharacterCrawler>>(),
+        sp.GetRequiredService<IDbContextFactory<AppDbContext>>(),
+        playerCharacterWorkCount,
+        sp.GetRequiredService<IMemoryCache>(),
+        sp.GetRequiredService<IConnectionMultiplexer>()));
+
+builder.Services.AddHostedService(sp =>
+    new ActivityReportCrawler(
+        sp.GetRequiredService<ILogger<ActivityReportCrawler>>(),
+        sp.GetRequiredService<IDbContextFactory<AppDbContext>>(),
+        sp.GetRequiredService<IDestiny2ApiClient>(),
+        sp.GetRequiredService<IMemoryCache>(),
+        sp.GetRequiredService<IConnectionMultiplexer>()));
 
 var host = builder.Build();
 
 await host.RunAsync();
-
-// ---- Helpers ----
-void ConfigureOpenTelemetry(HostApplicationBuilder b)
-{
-    var cfg = b.Configuration;
-    var baseEndpoint = cfg["OpenTelemetry:Endpoint"]?.TrimEnd('/');
-
-    if (string.IsNullOrWhiteSpace(baseEndpoint))
-        throw new InvalidOperationException("OpenTelemetry:Endpoint must be set.");
-
-    // Build correct per-signal endpoints
-    var tracesEndpoint = new Uri($"{baseEndpoint}/v1/traces");
-    var metricsEndpoint = new Uri($"{baseEndpoint}/v1/metrics");
-    var logsEndpoint = new Uri($"{baseEndpoint}/v1/logs");
-
-    var samplingRatio = Math.Clamp(cfg.GetValue<double?>("OpenTelemetry:TraceSamplingRatio") ?? 1.0, 0.0001, 1.0);
-
-    Action<ResourceBuilder> configureResource = resource =>
-    {
-        var assembly = typeof(PipelineOrchestrator).Assembly.GetName();
-        var serviceName = b.Environment.ApplicationName ?? assembly.Name ?? "Crawler";
-        var serviceVersion = assembly.Version?.ToString() ?? "unknown";
-
-        resource.AddService(serviceName, serviceVersion, Environment.MachineName)
-                .AddAttributes(new[]
-                {
-                    new KeyValuePair<string, object>("deployment.environment", b.Environment.EnvironmentName),
-                });
-    };
-
-    // Reusable batch config
-    Action<BatchExportProcessorOptions<Activity>> configureBatch = batch =>
-    {
-        batch.MaxQueueSize = 2048;
-        batch.ScheduledDelayMilliseconds = 5000;
-        batch.ExporterTimeoutMilliseconds = 30000;
-        batch.MaxExportBatchSize = 512;
-    };
-
-    string headers = cfg["OpenTelemetry:Headers"];
-
-    b.Services.AddOpenTelemetry()
-        .ConfigureResource(configureResource)
-        .WithMetrics(metrics =>
-        {
-            metrics.AddRuntimeInstrumentation();
-            metrics.AddHttpClientInstrumentation();
-            metrics.AddAspNetCoreInstrumentation();
-            metrics.AddNpgsqlInstrumentation();
-
-            metrics.AddOtlpExporter(opts =>
-            {
-                opts.Endpoint = metricsEndpoint;
-                opts.Protocol = OtlpExportProtocol.HttpProtobuf;
-                if (!string.IsNullOrWhiteSpace(headers))
-                    opts.Headers = headers;
-            });
-        })
-        .WithTracing(tracing =>
-        {
-            tracing.AddHttpClientInstrumentation();
-            tracing.AddAspNetCoreInstrumentation();
-            tracing.AddNpgsql();
-            tracing.AddSource(CrawlerTelemetry.ActivitySourceName);
-            tracing.SetSampler(new TraceIdRatioBasedSampler(samplingRatio));
-
-            tracing.AddOtlpExporter(opts =>
-            {
-                opts.Endpoint = tracesEndpoint;
-                opts.Protocol = OtlpExportProtocol.HttpProtobuf;
-                configureBatch(opts.BatchExportProcessorOptions);
-                if (!string.IsNullOrWhiteSpace(headers))
-                    opts.Headers = headers;
-            });
-        });
-
-    b.Logging.AddOpenTelemetry(options =>
-    {
-        options.IncludeScopes = true;
-        options.ParseStateValues = true;
-        options.IncludeFormattedMessage = true;
-
-        var resourceBuilder = ResourceBuilder.CreateDefault();
-        configureResource(resourceBuilder);
-        options.SetResourceBuilder(resourceBuilder);
-
-        options.AddOtlpExporter(opts =>
-        {
-            opts.Endpoint = logsEndpoint;
-            opts.Protocol = OtlpExportProtocol.HttpProtobuf;
-            if (!string.IsNullOrWhiteSpace(headers))
-                opts.Headers = headers;
-        });
-    });
-
-    // Logging filters
-    b.Logging.AddFilter<OpenTelemetryLoggerProvider>(filter =>
-    {
-        return b.Environment.IsDevelopment()
-            ? filter >= LogLevel.Information
-            : filter >= LogLevel.Warning;
-    });
-
-    b.Logging.AddFilter("Microsoft.Extensions.Logging.Console",
-        b.Environment.IsDevelopment() ? LogLevel.Debug : LogLevel.Information);
-}
 

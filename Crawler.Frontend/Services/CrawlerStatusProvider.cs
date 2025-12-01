@@ -33,6 +33,8 @@ public sealed class CrawlerStatusProvider : ICrawlerStatusProvider
         var (totalPlayers, queuedPlayers, processingPlayers, completedPlayers, errorPlayers, oldestQueuedAt, lastProcessedAt) =
             await GetQueueMetricsAsync(cancellationToken);
 
+        var (totalActivityReports, pendingActivityReports) = await GetActivityReportMetricsAsync(cancellationToken);
+
         var db = _redis.GetDatabase();
         var lastStarted = await GetLatestListDateAsync(db, LastStartedKey);
         var lastFinished = await GetLatestListDateAsync(db, LastFinishedKey);
@@ -49,7 +51,9 @@ public sealed class CrawlerStatusProvider : ICrawlerStatusProvider
             OldestQueuedAt: oldestQueuedAt,
             LastProcessedAt: lastProcessedAt,
             LastRunStartedAt: lastStarted,
-            LastRunFinishedAt: lastFinished
+            LastRunFinishedAt: lastFinished,
+            TotalActivityReports: totalActivityReports,
+            PendingActivityReports: pendingActivityReports
         );
     }
 
@@ -89,6 +93,22 @@ public sealed class CrawlerStatusProvider : ICrawlerStatusProvider
             .FirstOrDefaultAsync(cancellationToken);
 
         return (total, queued, processing, completed, errors, oldestQueuedAt, lastProcessedAt);
+    }
+
+    private async Task<(long total, long pending)> GetActivityReportMetricsAsync(CancellationToken cancellationToken)
+    {
+        await using var context = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+
+        var total = await context.ActivityReports
+            .AsNoTracking()
+            .LongCountAsync(cancellationToken);
+
+        var pending = await context.ActivityReports
+            .AsNoTracking()
+            .Where(report => report.NeedsFullCheck)
+            .LongCountAsync(cancellationToken);
+
+        return (total, pending);
     }
 
     private static string DetermineOverallStatus(long queued, long processing, long completed, long errors, long total)

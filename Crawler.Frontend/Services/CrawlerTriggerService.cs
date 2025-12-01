@@ -1,20 +1,39 @@
-using StackExchange.Redis;
+using Domain.Data;
+using Domain.Enums;
+using Microsoft.EntityFrameworkCore;
 
 namespace Crawler.Frontend.Services;
 
 public class CrawlerTriggerService : ICrawlerTriggerService
 {
-    private readonly RedisChannel ChannelName = new("crawler:pipeline:run", RedisChannel.PatternMode.Auto);
-    private readonly IConnectionMultiplexer _redis;
+    private readonly IDbContextFactory<AppDbContext> _contextFactory;
 
-    public CrawlerTriggerService(IConnectionMultiplexer redis)
+    public CrawlerTriggerService(IDbContextFactory<AppDbContext> contextFactory)
     {
-        _redis = redis;
+        _contextFactory = contextFactory;
     }
 
     public async Task TriggerAsync(CancellationToken cancellationToken = default)
     {
-        var sub = _redis.GetSubscriber();
-        await sub.PublishAsync(ChannelName, "manual-trigger");
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        if (await context.PlayerCrawlQueue.AnyAsync(pcq => pcq.Status == PlayerQueueStatus.Queued || pcq.Status == PlayerQueueStatus.Processing, cancellationToken))
+        {
+            return;
+        }
+        await context.Database.ExecuteSqlRawAsync(
+                """
+                TRUNCATE TABLE "PlayerCrawlQueue";
+                INSERT INTO "PlayerCrawlQueue"
+                    ("Id","PlayerId","EnqueuedAt","ProcessedAt","Status","Attempts")
+                SELECT
+                    gen_random_uuid(),  
+                    p."Id",
+                    NOW(),
+                    NULL,
+                    {0},                          
+                    0
+                FROM "Players" p;
+                """,
+                (int)PlayerQueueStatus.Queued);
     }
 }

@@ -1,56 +1,52 @@
 ﻿using API.Clients.Abstract;
-using Crawler.Telemetry;
+using Crawler.Helpers;
 using Domain.Data;
 using Domain.DB;
 using Domain.DestinyApi;
 using Domain.DTO;
 using Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using Npgsql;
 using StackExchange.Redis;
-using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading.Channels;
 
 namespace Crawler.Services
 {
-    public class CharacterCrawler
+    public class CharacterCrawler : BackgroundService
     {
-        private readonly IDatabase _cache;
         private readonly IDbContextFactory<AppDbContext> _contextFactory;
         private readonly IDestiny2ApiClient _client;
         private readonly ChannelReader<CharacterWorkItem> _input;
-        private readonly ChannelWriter<ActivityReportWorkItem> _output;
         private readonly ILogger<CharacterCrawler> _logger;
-        private readonly ConcurrentDictionary<long, int> _playerActivityCount;
         private readonly ConcurrentDictionary<long, int> _playerCharacterWorkCount;
+        private readonly IMemoryCache _cache;
+        private readonly IConnectionMultiplexer _redis;
 
         private const int MaxConcurrentTasks = 20;
         private static readonly DateTime ActivityCutoffUtc = new DateTime(2025, 7, 15);
-        private readonly Dictionary<long, long> _activityHashMap;
 
         public CharacterCrawler(
-            IConnectionMultiplexer redis,
             IDestiny2ApiClient client,
             ChannelReader<CharacterWorkItem> input,
-            ChannelWriter<ActivityReportWorkItem> output,
             ILogger<CharacterCrawler> logger,
             IDbContextFactory<AppDbContext> contextFactory,
-            ConcurrentDictionary<long, int> playerActivityCount,
             ConcurrentDictionary<long, int> playerCharacterWorkCount,
-            Dictionary<long, long> activityHashMap)
+            IMemoryCache cache,
+            IConnectionMultiplexer redis)
         {
-            _cache = redis.GetDatabase();
             _client = client;
             _input = input;
-            _output = output;
             _logger = logger;
             _contextFactory = contextFactory;
-            _playerActivityCount = playerActivityCount;
             _playerCharacterWorkCount = playerCharacterWorkCount;
-            _activityHashMap = activityHashMap;
+            _cache = cache;
+            _redis = redis;
         }
 
-        public async Task RunAsync(CancellationToken ct)
+        protected override async Task ExecuteAsync(CancellationToken ct)
         {
             var activeTasks = new List<Task>();
             _logger.LogInformation("Character crawler started.");
@@ -78,46 +74,34 @@ namespace Crawler.Services
             {
                 _logger.LogError(ex, "Unhandled error in character crawler loop.");
             }
-            finally
-            {
-                _output.Complete();
-            }
         }
 
         private async Task ProcessItemAsync(CharacterWorkItem item, CancellationToken ct)
         {
-            using var activity = CrawlerTelemetry.StartActivity("CharacterCrawler.ProcessItem");
-            activity?.SetTag("crawler.player.id", item.PlayerId);
-            activity?.SetTag("crawler.character.id", item.CharacterId);
             try
             {
                 await using var context = await _contextFactory.CreateDbContextAsync(ct);
                 var player = await context.Players.FindAsync(item.PlayerId, ct) ?? throw new InvalidDataException($"Player with Id {item.PlayerId} cannot be found");
 
-                var reportIds = await GetCharacterActivityReports(player, item.LastPlayed, item.CharacterId, ct);
-                var reportCount = reportIds.Length;
-                if (reportCount > 0)
-                {
-                    _playerActivityCount.AddOrUpdate(player.Id, reportCount, (_, existing) => existing + reportCount);
-                }
+                var reports = await GetCharacterActivityReports(player, item.LastPlayed, item.CharacterId, ct);
+                var insertedReportIds = await CreateActivityReports(reports, ct);
+                var playerReports = reports
+                    .Where(r => insertedReportIds.Contains(r.Id))
+                    .SelectMany(r => r.Players)
+                    .ToList();
+                context.ActivityReportPlayers.AddRange(playerReports);
+                await context.SaveChangesAsync(ct);
 
-                foreach (var reportId in reportIds)
-                {
-                    await _output.WriteAsync(new ActivityReportWorkItem(reportId, player.Id), ct);
-                }
                 player.NeedsFullCheck = false;
                 await context.SaveChangesAsync(ct);
                 _logger.LogInformation(
-                    "Queued {ReportCount} activity reports for player {PlayerId} character {CharacterId}.",
-                    reportCount,
+                    "Created {ReportCount} activity reports for player {PlayerId} character {CharacterId}.",
+                    insertedReportIds.Count,
                     item.PlayerId,
                     item.CharacterId);
-                activity?.SetTag("crawler.activity.reportCount", reportCount);
             }
             catch (Exception ex)
             {
-                activity?.AddException(ex);
-                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 _logger.LogError(ex, "Error processing CharacterWorkItem for player: {PlayerId}, character: {CharacterId}", item.PlayerId, item.CharacterId);
                 await using var context = await _contextFactory.CreateDbContextAsync(ct);
                 var playerQueueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == item.PlayerId, ct)
@@ -128,7 +112,6 @@ namespace Crawler.Services
                 playerQueueItem.Status = PlayerQueueStatus.Error;
                 player.NeedsFullCheck = true;
 
-                _playerActivityCount.TryRemove(item.PlayerId, out _);
 
                 await context.SaveChangesAsync(ct);
             }
@@ -138,15 +121,12 @@ namespace Crawler.Services
             }
         }
 
-        public async Task<long[]> GetCharacterActivityReports(Player player, DateTime lastPlayedActivityDate, string characterId, CancellationToken ct)
+        public async Task<List<ActivityReport>> GetCharacterActivityReports(Player player, DateTime lastPlayedActivityDate, string characterId, CancellationToken ct)
         {
-            using var activity = CrawlerTelemetry.StartActivity("CharacterCrawler.GetActivityReports");
-            activity?.SetTag("crawler.player.id", player.Id);
-            activity?.SetTag("crawler.character.id", characterId);
             lastPlayedActivityDate = player.NeedsFullCheck ? ActivityCutoffUtc : lastPlayedActivityDate;
 
             var page = 0;
-            var reportIds = new List<long>();
+            var reports = new List<ActivityReport>();
             var hasReachedLastUpdate = false;
             var activityCount = 250;
 
@@ -158,37 +138,92 @@ namespace Crawler.Services
                     if (response.Response?.activities == null || !response.Response.activities.Any())
                         break;
                     page++;
+                    var activityHashMap = await _cache.GetActivityHashMapAsync(_redis);
                     foreach (var activityReport in response.Response.activities)
                     {
                         hasReachedLastUpdate = activityReport.period <= lastPlayedActivityDate;
                         if (activityReport.period < ActivityCutoffUtc || hasReachedLastUpdate)
                             break;
                         var rawHash = activityReport.activityDetails.referenceId;
-                        if (!_activityHashMap.TryGetValue(rawHash, out var canonicalId))
+                        if (!activityHashMap.TryGetValue(rawHash, out var canonicalId))
                             continue;
                         if (!long.TryParse(activityReport.activityDetails.instanceId, out var instanceId))
                             continue;
 
-                        reportIds.Add(instanceId);
+                        reports.Add(new ActivityReport
+                        {
+                            Id = instanceId,
+                            ActivityId = canonicalId,
+                            Date = activityReport.period,
+                            NeedsFullCheck = activityReport.values["playerCount"].basic.value != 1,
+                            Players = new List<ActivityReportPlayer>
+                            {
+                                new ActivityReportPlayer
+                                {
+                                    PlayerId = player.Id,
+                                    ActivityReportId = instanceId,
+                                    Score = (int)activityReport.values["score"].basic.value,
+                                    ActivityId = canonicalId,
+                                    Duration = TimeSpan.FromSeconds(activityReport.values["activityDurationSeconds"].basic.value),
+                                    Completed = activityReport.values["completed"].basic.value == 1 && activityReport.values["completionReason"].basic.value != 2.0,
+                                }
+                            }
+                        });
+
                     }
                     if (response.Response.activities.Last().period < ActivityCutoffUtc)
                         break;
                 }
-                return reportIds.ToArray();
+                return reports;
             }
             catch (DestinyApiException ex) when (ex.ErrorCode == 1665)
             {
-                activity?.SetStatus(ActivityStatusCode.Error, "Profile throttled");
                 _logger.LogWarning(ex, "Historical stats throttled for player {PlayerId} character {CharacterId}.", player.Id, characterId);
-                return Array.Empty<long>();
+                return new List<ActivityReport>();
             }
             catch (Exception ex)
             {
-                activity?.AddException(ex);
-                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 _logger.LogError(ex, "Error fetching activity reports for player: {PlayerId}, character: {CharacterId}", player.Id, characterId);
                 throw;
             }
+        }
+
+        private async Task<List<long>> CreateActivityReports(IEnumerable<ActivityReport> activityReports, CancellationToken ct)
+        {
+            var reportList = activityReports.ToList();
+            if (reportList.Count == 0)
+            {
+                return new List<long>();
+            }
+
+            var parameters = new List<NpgsqlParameter>();
+            var valueStrings = new List<string>();
+            int parameterIndex = 0;
+
+            foreach (var activityReport in reportList)
+            {
+                var pId = new NpgsqlParameter($"pId{parameterIndex}", activityReport.Id);
+                var pDate = new NpgsqlParameter($"pDate{parameterIndex}", activityReport.Date);
+                var pActivityId = new NpgsqlParameter($"pActivityId{parameterIndex}", activityReport.ActivityId);
+                var pNeedsFullCheck = new NpgsqlParameter($"pNeedsFullCheck{parameterIndex}", activityReport.NeedsFullCheck);
+                parameters.Add(pId);
+                parameters.Add(pDate);
+                parameters.Add(pActivityId);
+                parameters.Add(pNeedsFullCheck);
+                valueStrings.Add($"(@pId{parameterIndex}, @pDate{parameterIndex}, @pActivityId{parameterIndex}, @pNeedsFullCheck{parameterIndex})");
+                parameterIndex++;
+            }
+
+            var sql = $@"
+                INSERT INTO ""ActivityReports"" (""Id"", ""Date"", ""ActivityId"", ""NeedsFullCheck"")
+                VALUES {string.Join(", ", valueStrings)}
+                ON CONFLICT (""Id"") DO NOTHING
+                RETURNING ""Id""";
+
+            await using var context = await _contextFactory.CreateDbContextAsync(ct);
+            return await context.Database
+                .SqlQueryRaw<long>(sql, parameters.ToArray())
+                .ToListAsync(ct);
         }
 
         private async Task FinalizeCharacterWorkAsync(long playerId, CancellationToken ct)
@@ -200,17 +235,6 @@ namespace Crawler.Services
             }
 
             _playerCharacterWorkCount.TryRemove(playerId, out _);
-
-            var hasPendingActivities = _playerActivityCount.TryGetValue(playerId, out var pendingActivities);
-            if (hasPendingActivities && pendingActivities > 0)
-            {
-                return;
-            }
-
-            if (hasPendingActivities && pendingActivities == 0)
-            {
-                _playerActivityCount.TryRemove(new KeyValuePair<long, int>(playerId, 0));
-            }
 
             await using var context = await _contextFactory.CreateDbContextAsync(ct);
             var playerQueueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == playerId, ct);
