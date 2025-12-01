@@ -96,7 +96,7 @@ namespace Crawler.Services
 
                 var playerValues = await context.Database.SqlQuery<PlayerCrawlQueue>($@"
                     UPDATE ""PlayerCrawlQueue""
-                    SET ""Status"" = {processingStatus}
+                    SET ""Status"" = {processingStatus}, ""Attempts"" = ""Attempts"" + 1
                     WHERE ""Id"" = (
                         SELECT ""Id""
                         FROM ""PlayerCrawlQueue""
@@ -108,13 +108,6 @@ namespace Crawler.Services
                     )
                     RETURNING *").ToListAsync(ct);
                 var playerValue = playerValues.FirstOrDefault();
-
-                if (playerValue != null)
-                {
-                    playerValue.Status = PlayerQueueStatus.Processing;
-                    playerValue.Attempts += 1;
-                    await context.SaveChangesAsync(ct);
-                }
 
                 return playerValue;
             }
