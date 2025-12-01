@@ -37,7 +37,7 @@ namespace Crawler.Services
         {
             _logger.LogInformation("Activity report crawler started processing queue.");
             var activeTasks = new List<Task>();
-            
+
             while (!ct.IsCancellationRequested)
             {
                 try
@@ -190,21 +190,21 @@ namespace Crawler.Services
                     var activityReportParameters = new List<NpgsqlParameter>();
                     var activityReportValueStrings = new List<string>();
                     int paramIndex = 0;
-                    
+
                     foreach (var group in grouped)
                     {
                         var membershipId = group.Key;
                         var score = group.Value.Sum(e => (int)e.values.score.basic.value);
                         var completed = group.Value.All(e => e.values.completed.basic.value == 1 && e.values.completionReason.basic.value != 2.0);
                         var duration = TimeSpan.FromSeconds(group.Value.Sum(e => e.values.activityDurationSeconds.basic.value));
-                        
+
                         activityReportParameters.Add(new NpgsqlParameter($"pPlayerId{paramIndex}", membershipId));
                         activityReportParameters.Add(new NpgsqlParameter($"pReportId{paramIndex}", reportId));
                         activityReportParameters.Add(new NpgsqlParameter($"pScore{paramIndex}", score));
                         activityReportParameters.Add(new NpgsqlParameter($"pCompleted{paramIndex}", completed));
                         activityReportParameters.Add(new NpgsqlParameter($"pDuration{paramIndex}", duration));
                         activityReportParameters.Add(new NpgsqlParameter($"pActivityId{paramIndex}", activityId));
-                        
+
                         activityReportValueStrings.Add($"(@pPlayerId{paramIndex}, @pReportId{paramIndex}, @pScore{paramIndex}, @pCompleted{paramIndex}, @pDuration{paramIndex}, @pActivityId{paramIndex})");
                         paramIndex++;
                     }

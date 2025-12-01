@@ -98,7 +98,7 @@ public sealed class CrawlerStatusProvider : ICrawlerStatusProvider
     private async Task<(long total, long pending)> GetActivityReportMetricsAsync(CancellationToken cancellationToken)
     {
         await using var context = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        
+
         var total = await context.ActivityReports
             .AsNoTracking()
             .LongCountAsync(cancellationToken);

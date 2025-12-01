@@ -149,7 +149,7 @@ namespace Crawler.Services
                             continue;
                         if (!long.TryParse(activityReport.activityDetails.instanceId, out var instanceId))
                             continue;
-                        
+
                         reports.Add(new ActivityReport
                         {
                             Id = instanceId,

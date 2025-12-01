@@ -40,7 +40,7 @@ namespace Crawler.Services
         {
             _logger.LogInformation("Player crawler started processing queue with {MaxConcurrency} concurrent workers.", MaxConcurrentPlayers);
             var activeTasks = new List<Task>();
-            
+
             try
             {
                 while (!ct.IsCancellationRequested)
@@ -93,7 +93,7 @@ namespace Crawler.Services
                 var queuedStatus = (int)PlayerQueueStatus.Queued;
                 var errorStatus = (int)PlayerQueueStatus.Error;
                 var maxAttempts = 3;
-                
+
                 var playerValues = await context.Database.SqlQuery<PlayerCrawlQueue>($@"
                     UPDATE ""PlayerCrawlQueue""
                     SET ""Status"" = {processingStatus}
@@ -108,14 +108,14 @@ namespace Crawler.Services
                     )
                     RETURNING *").ToListAsync(ct);
                 var playerValue = playerValues.FirstOrDefault();
-                
+
                 if (playerValue != null)
                 {
                     playerValue.Status = PlayerQueueStatus.Processing;
                     playerValue.Attempts += 1;
                     await context.SaveChangesAsync(ct);
                 }
-                
+
                 return playerValue;
             }
             catch (Exception ex)

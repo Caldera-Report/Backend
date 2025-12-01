@@ -46,9 +46,9 @@ namespace API.Clients
                         if (response.IsSuccessStatusCode)
                         {
                             return response;
-                        }   
+                        }
 
-                        var exception = await CreateExceptionAsync(response);                        
+                        var exception = await CreateExceptionAsync(response);
                         if (exception is DestinyApiException destinyException &&
                             DestinyApiConstants.NonRetryableErrorCodes.Contains(destinyException.ErrorCode))
                         {

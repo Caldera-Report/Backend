@@ -107,7 +107,7 @@ builder.Services.AddSingleton(characterChannel.Reader);
 builder.Services.AddSingleton(characterChannel.Writer);
 
 // Background services
-builder.Services.AddHostedService(sp => 
+builder.Services.AddHostedService(sp =>
     new PlayerCrawler(
         sp.GetRequiredService<IDestiny2ApiClient>(),
         characterChannel.Writer,
@@ -125,7 +125,7 @@ builder.Services.AddHostedService(sp =>
         sp.GetRequiredService<IMemoryCache>(),
         sp.GetRequiredService<IConnectionMultiplexer>()));
 
-builder.Services.AddHostedService(sp => 
+builder.Services.AddHostedService(sp =>
     new ActivityReportCrawler(
         sp.GetRequiredService<ILogger<ActivityReportCrawler>>(),
         sp.GetRequiredService<IDbContextFactory<AppDbContext>>(),
