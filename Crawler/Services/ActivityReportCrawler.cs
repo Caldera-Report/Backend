@@ -124,6 +124,13 @@ namespace Crawler.Services
                 var activityHashMap = await _cache.GetActivityHashMapAsync(_redis);
                 var activityId = activityHashMap.TryGetValue(pgcr.activityDetails.referenceId, out var mapped) ? mapped : 0;
 
+                if (activityId == 0)
+                {
+                    _logger.LogError("Unknown activity ID {activityId} in report {ReportId}", pgcr.activityDetails.referenceId, reportId);
+                    context.ActivityReports.Remove(activityReport);
+                    await context.SaveChangesAsync(ct);
+                }
+
                 activityReport.Date = pgcr.period;
                 activityReport.ActivityId = activityId;
 
