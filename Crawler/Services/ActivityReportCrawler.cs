@@ -129,6 +129,7 @@ namespace Crawler.Services
                     _logger.LogError("Unknown activity ID {activityId} in report {ReportId}", pgcr.activityDetails.referenceId, reportId);
                     context.ActivityReports.Remove(activityReport);
                     await context.SaveChangesAsync(ct);
+                    return;
                 }
 
                 activityReport.Date = pgcr.period;
