@@ -208,7 +208,6 @@ namespace Crawler.Services
                     if (queueItem != null)
                     {
                         queueItem.Status = PlayerQueueStatus.Error;
-                        queueItem.Attempts++;
                         await context.SaveChangesAsync(ct);
                     }
                 }

@@ -126,7 +126,6 @@ namespace Crawler.Services
 
                 activityReport.Date = pgcr.period;
                 activityReport.ActivityId = activityId;
-                activityReport.NeedsFullCheck = false;
 
                 var publicEntries = pgcr.entries.Where(e => e.player.destinyUserInfo.isPublic).ToList();
 
