@@ -52,8 +52,8 @@ namespace Crawler.Services
                         await completedTask;
                     }
 
-                    var playerQueueItem = await GetNextPlayerQueueItem(ct);
-                    if (playerQueueItem == null)
+                    var playerQueueId = await GetNextPlayerQueueItem(ct);
+                    if (playerQueueId == null)
                     {
                         if (activeTasks.Count == 0)
                         {
@@ -68,7 +68,7 @@ namespace Crawler.Services
                         continue;
                     }
 
-                    activeTasks.Add(ProcessPlayerAsync(playerQueueItem, ct));
+                    activeTasks.Add(ProcessPlayerAsync(playerQueueId, ct));
                 }
 
                 await Task.WhenAll(activeTasks);
@@ -84,7 +84,7 @@ namespace Crawler.Services
             }
         }
 
-        private async Task<PlayerCrawlQueue?> GetNextPlayerQueueItem(CancellationToken ct)
+        private async Task<long?> GetNextPlayerQueueItem(CancellationToken ct)
         {
             try
             {
@@ -109,7 +109,7 @@ namespace Crawler.Services
                     RETURNING *").ToListAsync(ct);
                 var playerValue = playerValues.FirstOrDefault();
 
-                return playerValue;
+                return playerValue?.PlayerId ?? null;
             }
             catch (Exception ex)
             {
@@ -118,11 +118,17 @@ namespace Crawler.Services
             }
         }
 
-        private async Task ProcessPlayerAsync(PlayerCrawlQueue playerValue, CancellationToken ct)
+        private async Task ProcessPlayerAsync(long playerId, CancellationToken ct)
         {
             try
             {
                 await using var context = await _contextFactory.CreateDbContextAsync(ct);
+                var playerValue = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId, ct);
+                if (playerValue is null)
+                {
+                    _logger.LogWarning("Player queue item for PlayerId {PlayerId} not found; skipping.", playerId);
+                    return;
+                }
                 var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerValue.PlayerId, ct);
                 if (player is null)
                 {
