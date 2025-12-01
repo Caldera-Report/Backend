@@ -81,7 +81,7 @@ namespace Crawler.Services
                         continue;
                     }
 
-                    activeTasks.Add(ProcessActivityReportAsync(activityReport, ct));
+                    activeTasks.Add(ProcessActivityReportAsync(activityReport.Id, ct));
                 }
                 catch (OperationCanceledException)
                 {
@@ -107,13 +107,18 @@ namespace Crawler.Services
             }
         }
 
-        private async Task ProcessActivityReportAsync(ActivityReport activityReport, CancellationToken ct)
+        private async Task ProcessActivityReportAsync(long reportId, CancellationToken ct)
         {
-            var reportId = activityReport.Id;
             await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
             try
             {
+                var activityReport = await context.ActivityReports.FirstOrDefaultAsync(ar => ar.Id == reportId, ct);
+                if (activityReport == null)
+                {
+                    _logger.LogWarning("Activity report {ReportId} not found.", reportId);
+                    return;
+                }
                 var pgcr = (await _client.GetPostGameCarnageReport(reportId, ct)).Response;
 
                 var activityHashMap = await _cache.GetActivityHashMapAsync(_redis);
@@ -226,6 +231,7 @@ namespace Crawler.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing activity report {ReportId}", reportId);
+                var activityReport = await context.ActivityReports.FirstOrDefaultAsync(ar => ar.Id == reportId, ct);
                 activityReport.NeedsFullCheck = true;
                 await context.SaveChangesAsync(ct);
             }
