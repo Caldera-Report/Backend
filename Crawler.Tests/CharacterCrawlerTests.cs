@@ -5,6 +5,7 @@ using Domain.DB;
 using Domain.DestinyApi;
 using Domain.DTO;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using StackExchange.Redis;
@@ -20,8 +21,8 @@ public class CharacterCrawlerTests
     {
         var databaseMock = new Mock<IDatabase>();
         databaseMock
-            .Setup(db => db.HashGetAll("activityHashMappings", Moq.It.IsAny<CommandFlags>()))
-            .Returns(new[]
+            .Setup(db => db.HashGetAllAsync("activityHashMappings", Moq.It.IsAny<CommandFlags>()))
+            .ReturnsAsync(new[]
             {
                 new HashEntry("100", "200")
             });
@@ -31,10 +32,7 @@ public class CharacterCrawlerTests
             .Setup(m => m.GetDatabase(Moq.It.IsAny<int>(), Moq.It.IsAny<object>()))
             .Returns(databaseMock.Object);
 
-        var activityHashMap = new Dictionary<long, long>
-        {
-            { 100, 200 }
-        };
+        var cache = new MemoryCache(new MemoryCacheOptions());
 
         var clientMock = new Mock<IDestiny2ApiClient>();
         clientMock.Setup(client => client.GetHistoricalStatsForCharacter(1, 2, "character-1", 0, 250, Moq.It.IsAny<CancellationToken>()))
@@ -52,7 +50,53 @@ public class CharacterCrawlerTests
                                 referenceId = 100,
                                 instanceId = "987654321"
                             },
-                            values = new Dictionary<string, DestinyHistoricalStatsValue>()
+                            values = new Dictionary<string, DestinyHistoricalStatsValue>
+                            {
+                                { "playerCount", new DestinyHistoricalStatsValue
+                                    {
+                                        basic = new DestinyHistoricalStatsValuePair
+                                        {
+                                            value = 1
+                                        }
+                                    }
+                                },
+                                {
+                                    "score", new DestinyHistoricalStatsValue
+                                    {
+                                        basic = new DestinyHistoricalStatsValuePair
+                                        {
+                                            value = 123456789
+                                        }
+                                    }
+                                },
+                                {
+                                    "activityDurationSeconds", new DestinyHistoricalStatsValue
+                                    {
+                                        basic = new DestinyHistoricalStatsValuePair
+                                        {
+                                            value = 3600
+                                        }
+                                    }
+                                },
+                                {
+                                    "completed", new DestinyHistoricalStatsValue
+                                    {
+                                        basic = new DestinyHistoricalStatsValuePair
+                                        {
+                                            value = 1
+                                        }
+                                    }
+                                },
+                                {
+                                    "completionReason", new DestinyHistoricalStatsValue
+                                    {
+                                        basic = new DestinyHistoricalStatsValuePair
+                                        {
+                                            value = 1
+                                        }
+                                    }
+                                }
+                            }
                         },
                         new DestinyHistoricalStatsPeriodGroup
                         {
@@ -73,20 +117,16 @@ public class CharacterCrawlerTests
             });
 
         var inputChannel = Channel.CreateUnbounded<CharacterWorkItem>();
-        var outputChannel = Channel.CreateUnbounded<ActivityReportWorkItem>();
-        var playerActivityCount = new ConcurrentDictionary<long, int>();
         var playerCharacterWorkCount = new ConcurrentDictionary<long, int>();
 
         var crawler = new CharacterCrawler(
-            multiplexerMock.Object,
             clientMock.Object,
             inputChannel.Reader,
-            outputChannel.Writer,
             NullLogger<CharacterCrawler>.Instance,
             new Mock<IDbContextFactory<AppDbContext>>().Object,
-            playerActivityCount,
             playerCharacterWorkCount,
-            activityHashMap);
+            cache,
+            multiplexerMock.Object);
 
         var player = new Player
         {
@@ -100,7 +140,7 @@ public class CharacterCrawlerTests
         var result = await crawler.GetCharacterActivityReports(player, new DateTime(2025, 7, 18), "character-1", CancellationToken.None);
 
         Assert.Single(result);
-        Assert.Equal(987654321L, result[0]);
+        Assert.Equal(987654321L, result[0].Id);
 
         clientMock.Verify(client => client.GetHistoricalStatsForCharacter(1, 2, "character-1", 0, 250, Moq.It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -110,15 +150,15 @@ public class CharacterCrawlerTests
     {
         var databaseMock = new Mock<IDatabase>();
         databaseMock
-            .Setup(db => db.HashGetAll("activityHashMappings", Moq.It.IsAny<CommandFlags>()))
-            .Returns(Array.Empty<HashEntry>());
+            .Setup(db => db.HashGetAllAsync("activityHashMappings", Moq.It.IsAny<CommandFlags>()))
+            .ReturnsAsync(Array.Empty<HashEntry>());
 
         var multiplexerMock = new Mock<IConnectionMultiplexer>();
         multiplexerMock
             .Setup(m => m.GetDatabase(Moq.It.IsAny<int>(), Moq.It.IsAny<object>()))
             .Returns(databaseMock.Object);
 
-        var activityHashMap = new Dictionary<long, long>();
+        var cache = new MemoryCache(new MemoryCacheOptions());
 
         var clientMock = new Mock<IDestiny2ApiClient>();
         clientMock.Setup(client => client.GetHistoricalStatsForCharacter(Moq.It.IsAny<long>(), Moq.It.IsAny<int>(), Moq.It.IsAny<string>(), Moq.It.IsAny<int>(), Moq.It.IsAny<int>(), Moq.It.IsAny<CancellationToken>()))
@@ -131,20 +171,16 @@ public class CharacterCrawlerTests
             }));
 
         var inputChannel = Channel.CreateUnbounded<CharacterWorkItem>();
-        var outputChannel = Channel.CreateUnbounded<ActivityReportWorkItem>();
-        var playerActivityCount = new ConcurrentDictionary<long, int>();
         var playerCharacterWorkCount = new ConcurrentDictionary<long, int>();
 
         var crawler = new CharacterCrawler(
-            multiplexerMock.Object,
             clientMock.Object,
             inputChannel.Reader,
-            outputChannel.Writer,
             NullLogger<CharacterCrawler>.Instance,
             new Mock<IDbContextFactory<AppDbContext>>().Object,
-            playerActivityCount,
             playerCharacterWorkCount,
-            activityHashMap);
+            cache,
+            multiplexerMock.Object);
 
         var player = new Player
         {

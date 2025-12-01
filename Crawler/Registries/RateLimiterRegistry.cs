@@ -15,13 +15,17 @@ namespace Crawler.Registries
 
         public FixedWindowRateLimiter GetRateLimiter(string key)
         {
-            return _rateLimiters.GetOrAdd(key, _ => new FixedWindowRateLimiter(new FixedWindowRateLimiterOptions
+            return _rateLimiters.GetOrAdd(key, k =>
             {
-                PermitLimit = _permitLimit,
-                Window = TimeSpan.FromSeconds(1),
-                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 0
-            }));
+                var permitLimit = k == "pgcr" ? 50 : _permitLimit;
+                return new FixedWindowRateLimiter(new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = permitLimit,
+                    Window = TimeSpan.FromSeconds(1),
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    QueueLimit = 0
+                });
+            });
         }
 
         public async Task<RateLimitLease> AcquireAsync(string key, CancellationToken cancellationToken = default)

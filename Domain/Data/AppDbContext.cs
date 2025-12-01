@@ -60,6 +60,10 @@ namespace Domain.Data
 
             });
 
+            modelBuilder.Entity<PlayerCrawlQueue>()
+                .HasIndex(pcq => pcq.PlayerId)
+                .IsUnique();
+
         }
     }
 }

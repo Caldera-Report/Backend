@@ -1,180 +1,234 @@
 ﻿using API.Clients.Abstract;
-using Crawler.Telemetry;
+using Crawler.Helpers;
 using Domain.Data;
 using Domain.DB;
-using Domain.DestinyApi;
-using Domain.DTO;
-using Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using Npgsql;
 using StackExchange.Redis;
-using System.Collections.Concurrent;
-using System.Threading.Channels;
-using System.Diagnostics;
 
 namespace Crawler.Services
 {
-    public class ActivityReportCrawler
+    public class ActivityReportCrawler : BackgroundService
     {
         private IDbContextFactory<AppDbContext> _contextFactory;
         private readonly IDestiny2ApiClient _client;
-        private readonly ChannelReader<ActivityReportWorkItem> _input;
-        private readonly ChannelWriter<PgcrWorkItem> _output;
         private readonly ILogger<ActivityReportCrawler> _logger;
-        private readonly ConcurrentDictionary<long, int> _playerActivityCount;
+        private readonly IMemoryCache _cache;
+        private readonly IConnectionMultiplexer _redis;
 
-        private const int MaxConcurrentTasks = 200;
+        private const int MaxConcurrentTasks = 150;
 
         public ActivityReportCrawler(
             ILogger<ActivityReportCrawler> logger,
             IDbContextFactory<AppDbContext> contextFactory,
-            IDestiny2ApiClient client, ChannelReader<ActivityReportWorkItem> input,
-            ChannelWriter<PgcrWorkItem> output,
-            ConcurrentDictionary<long, int> playerActivityCount)
+            IDestiny2ApiClient client,
+            IMemoryCache cache,
+            IConnectionMultiplexer redis)
         {
             _logger = logger;
             _contextFactory = contextFactory;
             _client = client;
-            _output = output;
-            _input = input;
-            _playerActivityCount = playerActivityCount;
+            _cache = cache;
+            _redis = redis;
         }
 
-        public async Task RunAsync(CancellationToken ct)
+        protected override async Task ExecuteAsync(CancellationToken ct)
         {
+            _logger.LogInformation("Activity report crawler started processing queue.");
             var activeTasks = new List<Task>();
-            _logger.LogInformation("Activity report crawler started.");
-            try
+            
+            while (!ct.IsCancellationRequested)
             {
-                await foreach (var item in _input.ReadAllAsync(ct))
+                try
                 {
                     while (activeTasks.Count >= MaxConcurrentTasks)
                     {
                         var completedTask = await Task.WhenAny(activeTasks);
                         activeTasks.Remove(completedTask);
+                        await completedTask;
                     }
 
-                    activeTasks.Add(CrawlPgcrAsync(item, ct));
-                }
+                    await using var context = await _contextFactory.CreateDbContextAsync(ct);
+                    var activityReportIds = await context.Database.SqlQueryRaw<long>(@$"
+                        UPDATE ""ActivityReports""
+                        SET ""NeedsFullCheck"" = false
+                        WHERE ""Id"" = (
+                            SELECT ""Id""
+                            FROM ""ActivityReports""
+                            WHERE ""NeedsFullCheck"" = true
+                            ORDER BY ""Id""
+                            FOR UPDATE SKIP LOCKED
+                            LIMIT 1
+                        )
+                        RETURNING ""Id""").ToListAsync(ct);
+                    var activityReportId = activityReportIds.FirstOrDefault();
+                    if (activityReportId == 0)
+                    {
+                        if (activeTasks.Count > 0)
+                        {
+                            await Task.WhenAll(activeTasks);
+                            activeTasks.Clear();
+                        }
+                        await Task.Delay(1000, ct);
+                        continue;
+                    }
 
-                await Task.WhenAll(activeTasks);
-                _logger.LogInformation("Activity report crawler drained input channel.");
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("Activity report crawler cancellation requested.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unhandled error in activity report crawler loop.");
-                throw;
-            }
-            finally
-            {
-                if (activeTasks.Count > 0)
+                    var activityReport = await context.ActivityReports.FindAsync(new object[] { activityReportId }, ct);
+                    if (activityReport == null)
+                    {
+                        _logger.LogWarning("Activity report {ReportId} not found after claiming.", activityReportId);
+                        continue;
+                    }
+
+                    activeTasks.Add(ProcessActivityReportAsync(activityReport, ct));
+                }
+                catch (OperationCanceledException)
                 {
-                    try
-                    {
-                        await Task.WhenAll(activeTasks);
-                    }
-                    catch (Exception ex) when (ex is OperationCanceledException or AggregateException)
-                    {
-                        _logger.LogDebug(ex, "Activity report crawler tasks ended during shutdown.");
-                    }
+                    _logger.LogInformation("Activity report crawler cancellation requested.");
+                    break;
                 }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing activity report crawl queue.");
+                }
+            }
 
-                _output.Complete();
+            if (activeTasks.Count > 0)
+            {
+                try
+                {
+                    await Task.WhenAll(activeTasks);
+                }
+                catch (Exception ex) when (ex is OperationCanceledException or AggregateException)
+                {
+                    _logger.LogDebug(ex, "Activity report crawler tasks cancelled during shutdown.");
+                }
             }
         }
 
-        private async Task CrawlPgcrAsync(ActivityReportWorkItem item, CancellationToken ct)
+        private async Task ProcessActivityReportAsync(ActivityReport activityReport, CancellationToken ct)
         {
-            using var activity = CrawlerTelemetry.StartActivity("ActivityReportCrawler.CrawlPgcr");
-            activity?.SetTag("crawler.player.id", item.PlayerId);
-            activity?.SetTag("crawler.activityReport.id", item.ActivityReportId);
+            var reportId = activityReport.Id;
+            await using var context = await _contextFactory.CreateDbContextAsync(ct);
+
             try
             {
-                await using var context = await _contextFactory.CreateDbContextAsync(ct);
-                var activityReport = await context.ActivityReports.FirstOrDefaultAsync(ar => ar.Id == item.ActivityReportId, ct);
-                if (activityReport == null || activityReport.NeedsFullCheck)
+                var pgcr = (await _client.GetPostGameCarnageReport(reportId, ct)).Response;
+
+                var activityHashMap = await _cache.GetActivityHashMapAsync(_redis);
+                var activityId = activityHashMap.TryGetValue(pgcr.activityDetails.referenceId, out var mapped) ? mapped : 0;
+
+                activityReport.Date = pgcr.period;
+                activityReport.ActivityId = activityId;
+                activityReport.NeedsFullCheck = false;
+
+                var publicEntries = pgcr.entries.Where(e => e.player.destinyUserInfo.isPublic).ToList();
+
+                if (publicEntries.Count > 0)
                 {
-                    var pgcr = (await _client.GetPostGameCarnageReport(item.ActivityReportId, ct)).Response;
-                    await _output.WriteAsync(new PgcrWorkItem(pgcr, item.PlayerId), ct);
-                    _logger.LogDebug("Queued PGCR {ActivityReportId} for downstream processing.", item.ActivityReportId);
-                }
-                else
-                {
-                    var remaining = DecrementPlayerActivityCount(item.PlayerId);
-                    if (remaining == 0)
+                    var playerData = publicEntries
+                        .Select(e => new Player
+                        {
+                            Id = long.Parse(e.player.destinyUserInfo.membershipId),
+                            MembershipType = e.player.destinyUserInfo.membershipType,
+                            DisplayName = e.player.destinyUserInfo.displayName,
+                            DisplayNameCode = e.player.destinyUserInfo.bungieGlobalDisplayNameCode,
+                        })
+                        .DistinctBy(p => p.Id)
+                        .ToList();
+
+                    if (playerData.Count > 0)
                     {
-                        var removed = TryRemovePlayerActivityCount(item.PlayerId);
-                        if (!removed && HasPendingActivities(item.PlayerId))
+                        var playerIds = playerData.Select(p => p.Id).ToList();
+
+                        var existingPlayerIds = await context.Players
+                            .Where(p => playerIds.Contains(p.Id))
+                            .Select(p => p.Id)
+                            .ToListAsync(ct);
+
+                        var newPlayerData = playerData.Where(p => !existingPlayerIds.Contains(p.Id)).ToList();
+
+                        if (newPlayerData.Count > 0)
                         {
-                            _logger.LogTrace("Player {PlayerId} still has pending PGCR work despite zero decrement result.", item.PlayerId);
-                        }
-                        else
-                        {
-                            var playerQueueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == item.PlayerId, ct)
-                                ?? throw new InvalidOperationException($"Player queue item with playerId {item.PlayerId} does not exist");
-                            if (playerQueueItem.Status != PlayerQueueStatus.Error)
+                            var parameters = new List<NpgsqlParameter>();
+                            var valueStrings = new List<string>();
+
+                            for (int i = 0; i < newPlayerData.Count; i++)
                             {
-                                playerQueueItem.Status = PlayerQueueStatus.Completed;
-                                playerQueueItem.ProcessedAt = DateTime.UtcNow;
-                                await context.SaveChangesAsync(ct);
-                                _logger.LogInformation("Completed crawling for player {PlayerId}.", item.PlayerId);
+                                var p = newPlayerData[i];
+                                parameters.Add(new NpgsqlParameter($"pId{i}", p.Id));
+                                parameters.Add(new NpgsqlParameter($"pMembershipType{i}", p.MembershipType));
+                                parameters.Add(new NpgsqlParameter($"pDisplayName{i}", p.DisplayName));
+                                parameters.Add(new NpgsqlParameter($"pDisplayNameCode{i}", p.DisplayNameCode));
+                                valueStrings.Add($"(@pId{i}, @pMembershipType{i}, @pDisplayName{i}, @pDisplayNameCode{i}, true)");
+                            }
+
+                            var playerSql = $@"
+                                INSERT INTO ""Players"" (""Id"", ""MembershipType"", ""DisplayName"", ""DisplayNameCode"", ""NeedsFullCheck"")
+                                VALUES {string.Join(", ", valueStrings)}
+                                ON CONFLICT (""Id"") DO NOTHING
+                                RETURNING ""Id""";
+
+                            var insertedPlayerIds = await context.Database
+                                .SqlQueryRaw<long>(playerSql, parameters.ToArray())
+                                .ToListAsync(ct);
+
+                            if (insertedPlayerIds.Count > 0)
+                            {
+                                var playerQueueItems = insertedPlayerIds.Select(id => new PlayerCrawlQueue
+                                {
+                                    PlayerId = id
+                                });
+                                context.PlayerCrawlQueue.AddRange(playerQueueItems);
                             }
                         }
                     }
-                    _logger.LogTrace("Skipping PGCR {ActivityReportId}; existing report is current.", item.ActivityReportId);
+
+                    var grouped = publicEntries.GroupBy(e => long.Parse(e.player.destinyUserInfo.membershipId)).ToDictionary(g => g.Key, g => g.ToList());
+
+                    var activityReportParameters = new List<NpgsqlParameter>();
+                    var activityReportValueStrings = new List<string>();
+                    int paramIndex = 0;
+                    
+                    foreach (var group in grouped)
+                    {
+                        var membershipId = group.Key;
+                        var score = group.Value.Sum(e => (int)e.values.score.basic.value);
+                        var completed = group.Value.All(e => e.values.completed.basic.value == 1 && e.values.completionReason.basic.value != 2.0);
+                        var duration = TimeSpan.FromSeconds(group.Value.Sum(e => e.values.activityDurationSeconds.basic.value));
+                        
+                        activityReportParameters.Add(new NpgsqlParameter($"pPlayerId{paramIndex}", membershipId));
+                        activityReportParameters.Add(new NpgsqlParameter($"pReportId{paramIndex}", reportId));
+                        activityReportParameters.Add(new NpgsqlParameter($"pScore{paramIndex}", score));
+                        activityReportParameters.Add(new NpgsqlParameter($"pCompleted{paramIndex}", completed));
+                        activityReportParameters.Add(new NpgsqlParameter($"pDuration{paramIndex}", duration));
+                        activityReportParameters.Add(new NpgsqlParameter($"pActivityId{paramIndex}", activityId));
+                        
+                        activityReportValueStrings.Add($"(@pPlayerId{paramIndex}, @pReportId{paramIndex}, @pScore{paramIndex}, @pCompleted{paramIndex}, @pDuration{paramIndex}, @pActivityId{paramIndex})");
+                        paramIndex++;
+                    }
+
+                    if (activityReportValueStrings.Count > 0)
+                    {
+                        var activityReportPlayerSql = $@"
+                            INSERT INTO ""ActivityReportPlayers"" (""PlayerId"", ""ActivityReportId"", ""Score"", ""Completed"", ""Duration"", ""ActivityId"")
+                            VALUES {string.Join(", ", activityReportValueStrings)}
+                            ON CONFLICT (""PlayerId"", ""ActivityReportId"") DO NOTHING";
+
+                        await context.Database.ExecuteSqlRawAsync(activityReportPlayerSql, activityReportParameters.ToArray(), ct);
+                    }
                 }
+
+                await context.SaveChangesAsync(ct);
+                _logger.LogInformation("Processed activity report {ReportId} with {PlayerCount} players.", reportId, publicEntries.Count);
             }
             catch (Exception ex)
             {
-                activity?.AddException(ex);
-                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-                _logger.LogError(ex, "Error occurred while crawling activity report: {id}", item.ActivityReportId);
-                await using var context = await _contextFactory.CreateDbContextAsync(ct);
-                var playerQueueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == item.PlayerId, ct)
-                    ?? throw new InvalidOperationException($"Player with Id {item.PlayerId} cannot be found");
-                var player = await context.Players.FirstOrDefaultAsync(p => p.Id == item.PlayerId, ct)
-                    ?? throw new InvalidOperationException($"Player with Id {item.PlayerId} cannot be found");
-
-                playerQueueItem.Status = PlayerQueueStatus.Error;
-                var remaining = DecrementPlayerActivityCount(item.PlayerId);
-
-                player.NeedsFullCheck = true;
+                _logger.LogError(ex, "Error processing activity report {ReportId}", reportId);
+                activityReport.NeedsFullCheck = true;
                 await context.SaveChangesAsync(ct);
-                if (remaining == 0)
-                {
-                    TryRemovePlayerActivityCount(item.PlayerId);
-                }
             }
-        }
-
-        private int DecrementPlayerActivityCount(long playerId)
-        {
-            while (true)
-            {
-                if (!_playerActivityCount.TryGetValue(playerId, out var current))
-                {
-                    return 0;
-                }
-
-                var updated = current <= 0 ? 0 : current - 1;
-                if (_playerActivityCount.TryUpdate(playerId, updated, current))
-                {
-                    return updated;
-                }
-            }
-        }
-
-        private bool TryRemovePlayerActivityCount(long playerId)
-        {
-            return _playerActivityCount.TryRemove(new KeyValuePair<long, int>(playerId, 0));
-        }
-
-        private bool HasPendingActivities(long playerId)
-        {
-            return _playerActivityCount.TryGetValue(playerId, out var remaining) && remaining > 0;
         }
     }
 }

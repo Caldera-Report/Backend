@@ -4,6 +4,7 @@ using Domain.Configuration;
 using Domain.DestinyApi;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
+using System.Threading.RateLimiting;
 
 namespace API.Clients
 {
@@ -36,25 +37,32 @@ namespace API.Clients
             {
                 try
                 {
-                    using var lease = await _rateLimiter.AcquireAsync(GetEndpointKey(endpoint), ct);
-
-                    var response = await sendAsync();
-                    if (response.IsSuccessStatusCode)
+                    var endpointKey = GetEndpointKey(endpoint);
+                    RateLimitLease? lease = null;
+                    try
                     {
-                        return response;
+                        lease = await _rateLimiter.AcquireAsync(endpointKey, ct);
+                        var response = await sendAsync();
+                        if (response.IsSuccessStatusCode)
+                        {
+                            return response;
+                        }   
+
+                        var exception = await CreateExceptionAsync(response);                        
+                        if (exception is DestinyApiException destinyException &&
+                            DestinyApiConstants.NonRetryableErrorCodes.Contains(destinyException.ErrorCode))
+                        {
+                            throw destinyException;
+                        }
+
+                        if (attempt == MaxRetryAttempts)
+                        {
+                            throw exception;
+                        }
                     }
-
-                    var exception = await CreateExceptionAsync(response);
-
-                    if (exception is DestinyApiException destinyException &&
-                        DestinyApiConstants.NonRetryableErrorCodes.Contains(destinyException.ErrorCode))
+                    finally
                     {
-                        throw destinyException;
-                    }
-
-                    if (attempt == MaxRetryAttempts)
-                    {
-                        throw exception;
+                        lease?.Dispose();
                     }
                 }
                 catch (DestinyApiException ex) when (!DestinyApiConstants.NonRetryableErrorCodes.Contains(ex.ErrorCode) && attempt < MaxRetryAttempts)
