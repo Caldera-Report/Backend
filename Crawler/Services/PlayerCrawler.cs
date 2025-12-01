@@ -68,7 +68,7 @@ namespace Crawler.Services
                         continue;
                     }
 
-                    activeTasks.Add(ProcessPlayerAsync(playerQueueId, ct));
+                    activeTasks.Add(ProcessPlayerAsync(playerQueueId.Value, ct));
                 }
 
                 await Task.WhenAll(activeTasks);
@@ -180,10 +180,16 @@ namespace Crawler.Services
             }
             catch (DestinyApiException ex) when (ex.ErrorCode == 1601)
             {
-                _logger.LogError("Player {PlayerId} does not exist", playerValue.PlayerId);
+                _logger.LogError("Player {PlayerId} does not exist", playerId);
                 try
                 {
                     await using var context = await _contextFactory.CreateDbContextAsync(ct);
+                    var playerValue = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId, ct);
+                    if (playerValue == null)
+                    {
+                        _logger.LogWarning("Player crawl queue item for PlayerId {PlayerId} not found; cannot remove.", playerId);
+                        return;
+                    }
                     context.PlayerCrawlQueue.Remove(playerValue);
                     var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerValue.PlayerId, ct);
                     if (player != null)
@@ -194,16 +200,16 @@ namespace Crawler.Services
                 }
                 catch (Exception innerEx)
                 {
-                    _logger.LogError(innerEx, "Error removing player {PlayerId}", playerValue.PlayerId);
+                    _logger.LogError(innerEx, "Error removing player {PlayerId}", playerId);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing player {PlayerId}.", playerValue.PlayerId);
+                _logger.LogError(ex, "Error processing player {PlayerId}.", playerId);
                 try
                 {
                     await using var context = await _contextFactory.CreateDbContextAsync(ct);
-                    var queueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.Id == playerValue.Id, ct);
+                    var queueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId, ct);
                     if (queueItem != null)
                     {
                         queueItem.Status = PlayerQueueStatus.Error;
@@ -212,7 +218,7 @@ namespace Crawler.Services
                 }
                 catch (Exception innerEx)
                 {
-                    _logger.LogError(innerEx, "Error updating player queue status to Error for player {PlayerId}.", playerValue.PlayerId);
+                    _logger.LogError(innerEx, "Error updating player queue status to Error for player {PlayerId}.", playerId);
                 }
             }
         }
