@@ -74,7 +74,7 @@ namespace Crawler.Services
                         continue;
                     }
 
-                    var activityReport = await context.ActivityReports.FindAsync(new object[] { activityReportId }, ct);
+                    var activityReport = await context.ActivityReports.FirstOrDefaultAsync(ar => ar.Id == activityReportId, ct);
                     if (activityReport == null)
                     {
                         _logger.LogWarning("Activity report {ReportId} not found after claiming.", activityReportId);
@@ -198,37 +198,43 @@ namespace Crawler.Services
                     }
 
                     var grouped = publicEntries.GroupBy(e => long.Parse(e.player.destinyUserInfo.membershipId)).ToDictionary(g => g.Key, g => g.ToList());
-
-                    var activityReportParameters = new List<NpgsqlParameter>();
-                    var activityReportValueStrings = new List<string>();
-                    int paramIndex = 0;
+                    var existingActivityReportPlayers = await context.ActivityReportPlayers
+                        .Where(arp => arp.ActivityReportId == reportId && grouped.Keys.Contains(arp.PlayerId))
+                        .ToListAsync(ct);
 
                     foreach (var group in grouped)
                     {
-                        var membershipId = group.Key;
-                        var score = group.Value.Sum(e => (int)e.values.score.basic.value);
-                        var completed = group.Value.All(e => e.values.completed.basic.value == 1 && e.values.completionReason.basic.value != 2.0);
-                        var duration = TimeSpan.FromSeconds(group.Value.Sum(e => e.values.activityDurationSeconds.basic.value));
+                        var activityReportPlayer = new ActivityReportPlayer
+                        {
+                            PlayerId = group.Key,
+                            ActivityReportId = reportId,
+                            Score = group.Value.Sum(e => (int)e.values.score.basic.value),
+                            Completed = group.Value.All(e => e.values.completed.basic.value == 1 && e.values.completionReason.basic.value != 2.0),
+                            Duration = TimeSpan.FromSeconds(group.Value.Sum(e => e.values.activityDurationSeconds.basic.value)),
+                            ActivityId = activityId
+                        };
 
-                        activityReportParameters.Add(new NpgsqlParameter($"pPlayerId{paramIndex}", membershipId));
-                        activityReportParameters.Add(new NpgsqlParameter($"pReportId{paramIndex}", reportId));
-                        activityReportParameters.Add(new NpgsqlParameter($"pScore{paramIndex}", score));
-                        activityReportParameters.Add(new NpgsqlParameter($"pCompleted{paramIndex}", completed));
-                        activityReportParameters.Add(new NpgsqlParameter($"pDuration{paramIndex}", duration));
-                        activityReportParameters.Add(new NpgsqlParameter($"pActivityId{paramIndex}", activityId));
+                        if (!existingActivityReportPlayers.Any(earp => earp.PlayerId == activityReportPlayer.PlayerId))
+                        {
+                            context.ActivityReportPlayers.Add(activityReportPlayer);
+                        }
+                        else
+                        {
+                            var oldActivityReportPlayer = existingActivityReportPlayers.FirstOrDefault(earp => earp.PlayerId == activityReportPlayer.PlayerId);
 
-                        activityReportValueStrings.Add($"(@pPlayerId{paramIndex}, @pReportId{paramIndex}, @pScore{paramIndex}, @pCompleted{paramIndex}, @pDuration{paramIndex}, @pActivityId{paramIndex})");
-                        paramIndex++;
-                    }
-
-                    if (activityReportValueStrings.Count > 0)
-                    {
-                        var activityReportPlayerSql = $@"
-                            INSERT INTO ""ActivityReportPlayers"" (""PlayerId"", ""ActivityReportId"", ""Score"", ""Completed"", ""Duration"", ""ActivityId"")
-                            VALUES {string.Join(", ", activityReportValueStrings)}
-                            ON CONFLICT (""PlayerId"", ""ActivityReportId"") DO NOTHING";
-
-                        await context.Database.ExecuteSqlRawAsync(activityReportPlayerSql, activityReportParameters.ToArray(), ct);
+                            if (oldActivityReportPlayer is not null && (oldActivityReportPlayer.Score != activityReportPlayer.Score ||
+                                    oldActivityReportPlayer.Duration != activityReportPlayer.Duration ||
+                                    oldActivityReportPlayer.Completed != activityReportPlayer.Completed))
+                            {
+                                oldActivityReportPlayer.Score = activityReportPlayer.Score;
+                                oldActivityReportPlayer.Duration = activityReportPlayer.Duration;
+                                oldActivityReportPlayer.Completed = activityReportPlayer.Completed;
+                            }
+                            else if (oldActivityReportPlayer is null)
+                            {
+                                _logger.LogWarning("Inconsistent state for player {PlayerId} in report {ReportId}", activityReportPlayer.PlayerId, reportId);
+                            }
+                        }
                     }
                 }
 
@@ -239,6 +245,11 @@ namespace Crawler.Services
             {
                 _logger.LogError(ex, "Error processing activity report {ReportId}", reportId);
                 var activityReport = await context.ActivityReports.FirstOrDefaultAsync(ar => ar.Id == reportId, ct);
+                if (activityReport == null)
+                {
+                    _logger.LogWarning("Activity report {ReportId} not found in error handler.", reportId);
+                    return;
+                }
                 activityReport.NeedsFullCheck = true;
                 await context.SaveChangesAsync(ct);
             }
