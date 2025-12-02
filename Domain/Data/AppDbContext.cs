@@ -20,8 +20,8 @@ namespace Domain.Data
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<Player>()
-                .Property(p => p.Id).ValueGeneratedNever()
-                ;
+                .Property(p => p.Id)
+                .ValueGeneratedNever();
 
             modelBuilder.Entity<Activity>()
                 .Property(a => a.Id)
@@ -29,33 +29,40 @@ namespace Domain.Data
 
             modelBuilder.Entity<ActivityReport>(entity =>
             {
-                entity.HasIndex(ar => ar.Id);
                 entity.Property(ar => ar.Id).ValueGeneratedNever();
-                entity.HasIndex(ar => new { ar.Id, ar.ActivityId, ar.Date });
-                entity.HasIndex(ar => new { ar.Id, ar.ActivityId });
+                entity.HasIndex(ar => new { ar.ActivityId, ar.Date });
+                entity.HasIndex(ar => ar.ActivityId);
             });
 
             modelBuilder.Entity<ActivityReportPlayer>(entity =>
             {
                 entity.HasKey(arp => new { arp.ActivityReportId, arp.PlayerId });
-                entity.HasIndex(arp => new { arp.ActivityReportId, arp.PlayerId })
-                    .HasFilter("\"Completed\" = TRUE");
+
+                entity.HasIndex(arp => arp.PlayerId);
+
+                //Leaderboard indexes
                 entity.HasIndex(arp => new { arp.ActivityId, arp.Completed, arp.Duration })
                     .HasFilter("\"Completed\" = TRUE");
-                entity.HasIndex(arp => new { arp.ActivityReportId, arp.PlayerId, arp.Score });
-                entity.HasIndex(arp => new { arp.ActivityReportId, arp.PlayerId, arp.Duration });
-                entity.HasIndex(arp => new { arp.ActivityId });
+
+                entity.HasIndex(arp => new { arp.ActivityId, arp.Score })
+                      .HasFilter("\"Completed\" = TRUE");
+
+                entity.HasIndex(arp => new { arp.ActivityId, arp.PlayerId })
+                      .HasFilter("\"Completed\" = TRUE");
             });
 
             modelBuilder.Entity<PlayerLeaderboard>(entity =>
             {
                 entity.HasKey(pl => new { pl.PlayerId, pl.ActivityId, pl.LeaderboardType });
+
                 var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
+
                 entity.Property(pl => pl.Data)
                       .HasColumnType("jsonb")
                       .HasConversion(
                           v => JsonSerializer.Serialize(v, jsonOpts),
                           v => JsonSerializer.Deserialize<LeaderboardStat>(v, jsonOpts)!);
+
                 entity.HasIndex(pl => new { pl.ActivityId, pl.LeaderboardType, pl.Rank });
 
             });
