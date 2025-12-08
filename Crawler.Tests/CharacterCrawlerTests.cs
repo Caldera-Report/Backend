@@ -5,12 +5,13 @@ using Domain.DB;
 using Domain.DestinyApi;
 using Domain.DTO;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using StackExchange.Redis;
+using System;
 using System.Collections.Concurrent;
-using System.Threading.Channels;
 
 namespace Crawler.Tests;
 
@@ -116,15 +117,15 @@ public class CharacterCrawlerTests
                 MessageData = new Dictionary<string, string>()
             });
 
-        var inputChannel = Channel.CreateUnbounded<CharacterWorkItem>();
-        var playerCharacterWorkCount = new ConcurrentDictionary<long, int>();
+        var dbContextOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase($"CharacterCrawlerTests_{Guid.NewGuid()}")
+            .Options;
+        var contextFactory = new PooledDbContextFactory<AppDbContext>(dbContextOptions);
 
-        var crawler = new CharacterCrawler(
+        var crawler = new PlayerCrawler(
             clientMock.Object,
-            inputChannel.Reader,
-            NullLogger<CharacterCrawler>.Instance,
-            new Mock<IDbContextFactory<AppDbContext>>().Object,
-            playerCharacterWorkCount,
+            NullLogger<PlayerCrawler>.Instance,
+            contextFactory,
             cache,
             multiplexerMock.Object);
 
@@ -137,16 +138,17 @@ public class CharacterCrawlerTests
             NeedsFullCheck = false
         };
 
-        var result = await crawler.GetCharacterActivityReports(player, new DateTime(2025, 7, 18), "character-1", CancellationToken.None);
+        var reportsBag = new ConcurrentBag<ActivityReport>();
+        await crawler.GetCharacterActivityReports(player, new DateTime(2025, 7, 18), "character-1", reportsBag, CancellationToken.None);
 
-        Assert.Single(result);
-        Assert.Equal(987654321L, result[0].Id);
+        Assert.Single(reportsBag);
+        Assert.Equal(987654321L, reportsBag.First().Id);
 
         clientMock.Verify(client => client.GetHistoricalStatsForCharacter(1, 2, "character-1", 0, 250, Moq.It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task GetCharacterActivityReports_ReturnsEmptyArrayWhenPGCRNotFound()
+    public async Task GetCharacterActivityReports_ReturnsEmptyBagWhenPGCRNotFound()
     {
         var databaseMock = new Mock<IDatabase>();
         databaseMock
@@ -170,15 +172,15 @@ public class CharacterCrawlerTests
                 MessageData = new Dictionary<string, string>()
             }));
 
-        var inputChannel = Channel.CreateUnbounded<CharacterWorkItem>();
-        var playerCharacterWorkCount = new ConcurrentDictionary<long, int>();
+        var dbContextOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase($"CharacterCrawlerTests_{Guid.NewGuid()}")
+            .Options;
+        var contextFactory = new PooledDbContextFactory<AppDbContext>(dbContextOptions);
 
-        var crawler = new CharacterCrawler(
+        var crawler = new PlayerCrawler(
             clientMock.Object,
-            inputChannel.Reader,
-            NullLogger<CharacterCrawler>.Instance,
-            new Mock<IDbContextFactory<AppDbContext>>().Object,
-            playerCharacterWorkCount,
+            NullLogger<PlayerCrawler>.Instance,
+            contextFactory,
             cache,
             multiplexerMock.Object);
 
@@ -191,8 +193,9 @@ public class CharacterCrawlerTests
             NeedsFullCheck = false
         };
 
-        var result = await crawler.GetCharacterActivityReports(player, DateTime.UtcNow, "character-77", CancellationToken.None);
+        var reportsBag = new ConcurrentBag<ActivityReport>();
+        await crawler.GetCharacterActivityReports(player, DateTime.UtcNow, "character-77", reportsBag, CancellationToken.None);
 
-        Assert.Empty(result);
+        Assert.Empty(reportsBag);
     }
 }

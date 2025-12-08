@@ -7,7 +7,6 @@ using Domain.DTO.Responses;
 using Domain.Enums;
 using Facet.Extensions;
 using Facet.Extensions.EFCore;
-using Facet.Mapping;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
@@ -21,12 +20,14 @@ namespace API.Services
         private readonly AppDbContext _context;
         private readonly IDatabase _cache;
         private readonly ILogger<QueryService> _logger;
+        private readonly IDbContextFactory<AppDbContext> _contextFactory;
 
-        public QueryService(AppDbContext context, IConnectionMultiplexer redis, ILogger<QueryService> logger)
+        public QueryService(AppDbContext context, IConnectionMultiplexer redis, ILogger<QueryService> logger, IDbContextFactory<AppDbContext> contextFactory)
         {
             _context = context;
             _cache = redis.GetDatabase();
             _logger = logger;
+            _contextFactory = contextFactory;
         }
 
         public async Task<List<OpTypeDto>> GetAllActivitiesAsync()
@@ -144,41 +145,23 @@ namespace API.Services
         {
             try
             {
-                if (count == 250 && offset == 0)
-                {
-                    var cachedData = await _cache.StringGetAsync($"leaderboard:activity:{activityId}:type:{(int)type}");
-                    if (cachedData.HasValue)
-                    {
-                        var leaderboardData = JsonSerializer.Deserialize<List<PlayerLeaderboard>>(cachedData.ToString()!);
-                        if (leaderboardData != null)
-                        {
-                            return leaderboardData
-                                .Select(pl => new LeaderboardResponse
-                                {
-                                    Player = new PlayerDto(pl.Player),
-                                    Rank = pl.Rank,
-                                    Data = pl.Data?.Completions?.ToString("0,0", CultureInfo.InvariantCulture) ?? pl.Data?.Score?.ToString("0,0", CultureInfo.InvariantCulture) ?? pl.Data?.Duration.ToString() ?? string.Empty
-                                })
-                                .ToList();
-                        }
-                    }
-                }
-
-                var leaderboard = await _context.PlayerLeaderboards
+                var query = _context.PlayerLeaderboards
                     .AsNoTracking()
                     .Include(pl => pl.Player)
-                    .Where(pl => pl.ActivityId == activityId && pl.LeaderboardType == type)
-                    .OrderBy(pl => pl.Rank)
+                    .Where(pl => pl.ActivityId == activityId && pl.LeaderboardType == type);
+                var leaderboardQuery = type == LeaderboardTypes.FastestCompletion ? query.OrderBy(pl => pl.Data)
+                    : query.OrderByDescending(pl => pl.Data);
+                var leaderboard = await leaderboardQuery
                     .Skip(offset)
                     .Take(count)
                     .ToListAsync();
 
                 return leaderboard
-                    .Select(pl => new LeaderboardResponse()
+                    .Select((pl, i) => new LeaderboardResponse()
                     {
                         Player = new PlayerDto(pl.Player),
-                        Rank = pl.Rank,
-                        Data = pl.Data?.Completions?.ToString("0,0", CultureInfo.InvariantCulture) ?? pl.Data?.Score?.ToString("0,0", CultureInfo.InvariantCulture) ?? pl.Data?.Duration.ToString() ?? string.Empty
+                        Rank = offset + i + 1,
+                        Data = pl.LeaderboardType == LeaderboardTypes.FastestCompletion ? TimeSpan.FromSeconds(pl.Data).ToString() : pl.Data.ToString("0,0", CultureInfo.InvariantCulture)
                     })
                     .ToList();
             }
@@ -239,25 +222,92 @@ namespace API.Services
         {
             try
             {
-                var leaderboards = await _context.PlayerLeaderboards
+                var playerIds = await _context.Players
+                    .Where(p => EF.Functions.ILike(p.FullDisplayName, $"%{playerName}%"))
+                    .Select(p => p.Id)
+                    .ToListAsync();
+
+                if (playerIds.Count == 0)
+                {
+                    return new List<LeaderboardResponse>();
+                }
+
+                var query = _context.PlayerLeaderboards
                     .AsNoTracking()
                     .Include(pl => pl.Player)
-                    .Where(pl => EF.Functions.ILike(pl.FullDisplayName, $"%{playerName}%") && pl.LeaderboardType == type && pl.ActivityId == activityId)
-                    .OrderBy(pl => pl.Rank)
+                    .Where(pl => playerIds.Contains(pl.PlayerId)
+                        && pl.LeaderboardType == type
+                        && pl.ActivityId == activityId);
+
+                var leaderboardQuery = type == LeaderboardTypes.FastestCompletion
+                    ? query.OrderBy(pl => pl.Data)
+                    : query.OrderByDescending(pl => pl.Data);
+
+                var leaderboards = await leaderboardQuery
                     .Take(250)
                     .ToListAsync();
-                return leaderboards
-                    .Select(pl => new LeaderboardResponse()
+
+                var leaderboardTasks = leaderboards.Select(async pl =>
+                {
+                    var rank = await ComputePlayerScore(pl);
+                    return new LeaderboardResponse
                     {
                         Player = new PlayerDto(pl.Player),
-                        Rank = pl.Rank,
-                        Data = pl.Data?.Completions?.ToString("0,0", CultureInfo.InvariantCulture) ?? pl.Data?.Score?.ToString("0,0", CultureInfo.InvariantCulture) ?? pl.Data?.Duration.ToString() ?? string.Empty
-                    })
-                    .ToList();
+                        Rank = rank,
+                        Data = pl.LeaderboardType == LeaderboardTypes.FastestCompletion
+                            ? TimeSpan.FromSeconds(pl.Data).ToString()
+                            : pl.Data.ToString("0,0", CultureInfo.InvariantCulture)
+                    };
+                }).ToList();
+
+                var leaderboardResponses = await Task.WhenAll(leaderboardTasks);
+                return leaderboardResponses.ToList();
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error retrieving leaderboards for player {PlayerName}", playerName);
+                throw;
+            }
+        }
+
+        private async Task<int> ComputePlayerScore(PlayerLeaderboard playerLeaderboard)
+        {
+            await using var context = _contextFactory.CreateDbContext();
+            var query = context.PlayerLeaderboards
+                .Where(pl => pl.ActivityId == playerLeaderboard.ActivityId
+                        && pl.LeaderboardType == playerLeaderboard.LeaderboardType);
+            var higherCount = playerLeaderboard.LeaderboardType == LeaderboardTypes.FastestCompletion ? await query.Where(pl => pl.Data < playerLeaderboard.Data).CountAsync()
+                : await query.Where(pl => pl.Data > playerLeaderboard.Data).CountAsync();
+            return higherCount + 1;
+        }
+
+        public async Task LoadCrawler()
+        {
+            try
+            {
+                var isCrawling = await _context.PlayerCrawlQueue.AnyAsync(pcq => pcq.Status == PlayerQueueStatus.Queued || pcq.Status == PlayerQueueStatus.Processing);
+                if (!isCrawling)
+                {
+                    await _context.Database.ExecuteSqlRawAsync(
+                        """
+                        TRUNCATE TABLE "PlayerCrawlQueue";
+                        INSERT INTO "PlayerCrawlQueue"
+                            ("Id","PlayerId","EnqueuedAt","ProcessedAt","Status","Attempts")
+                        SELECT
+                            gen_random_uuid(),  
+                            p."Id",
+                            NOW(),
+                            NULL,
+                            {0},                          
+                            0
+                        FROM "Players" p;
+                        """,
+                        (int)PlayerQueueStatus.Queued);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error loading crawler queue");
                 throw;
             }
         }

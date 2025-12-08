@@ -36,7 +36,7 @@ namespace Domain.Data
 
             modelBuilder.Entity<ActivityReportPlayer>(entity =>
             {
-                entity.HasKey(arp => new { arp.ActivityReportId, arp.PlayerId });
+                entity.HasKey(arp => new { arp.ActivityReportId, arp.PlayerId, arp.SessionId });
 
                 entity.HasIndex(arp => arp.PlayerId);
 
@@ -57,13 +57,7 @@ namespace Domain.Data
 
                 var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
 
-                entity.Property(pl => pl.Data)
-                      .HasColumnType("jsonb")
-                      .HasConversion(
-                          v => JsonSerializer.Serialize(v, jsonOpts),
-                          v => JsonSerializer.Deserialize<LeaderboardStat>(v, jsonOpts)!);
-
-                entity.HasIndex(pl => new { pl.ActivityId, pl.LeaderboardType, pl.Rank });
+                entity.HasIndex(pl => new { pl.ActivityId, pl.LeaderboardType, pl.Data });
 
             });
 

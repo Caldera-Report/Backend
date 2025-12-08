@@ -1,13 +1,13 @@
 ﻿using API.Clients.Abstract;
+using Crawler.Helpers;
 using Domain.Data;
 using Domain.DB;
 using Domain.DestinyApi;
-using Domain.DTO;
 using Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
-using System.Threading.Channels;
 
 namespace Crawler.Services
 {
@@ -15,25 +15,25 @@ namespace Crawler.Services
     {
         private IDbContextFactory<AppDbContext> _contextFactory;
         private readonly IDestiny2ApiClient _client;
-        private readonly ChannelWriter<CharacterWorkItem> _output;
         private readonly ILogger<PlayerCrawler> _logger;
-        private readonly ConcurrentDictionary<long, int> _playerCharacterWorkCount;
+        private readonly IMemoryCache _cache;
+        private readonly IDatabase _redis;
 
         private const int MaxConcurrentPlayers = 20;
         private static readonly DateTime ActivityCutoffUtc = new DateTime(2025, 7, 15);
 
         public PlayerCrawler(
             IDestiny2ApiClient client,
-            ChannelWriter<CharacterWorkItem> output,
             ILogger<PlayerCrawler> logger,
             IDbContextFactory<AppDbContext> contextFactory,
-            ConcurrentDictionary<long, int> playerCharacterWorkCount)
+            IMemoryCache cache,
+            IConnectionMultiplexer redis)
         {
             _client = client;
-            _output = output;
             _logger = logger;
             _contextFactory = contextFactory;
-            _playerCharacterWorkCount = playerCharacterWorkCount;
+            _cache = cache;
+            _redis = redis.GetDatabase();
         }
 
         protected override async Task ExecuteAsync(CancellationToken ct)
@@ -144,7 +144,6 @@ namespace Crawler.Services
                     .Select(r => (DateTime?)r.Date)
                     .FirstOrDefaultAsync(ct);
 
-                var queuedCharacters = 0;
                 IEnumerable<KeyValuePair<string, DestinyCharacterComponent>> charactersToProcess;
                 if (player.LastCrawlStarted == null || player.NeedsFullCheck)
                 {
@@ -154,28 +153,50 @@ namespace Crawler.Services
                 {
                     charactersToProcess = characters.Where(c => c.Value.dateLastPlayed > (player.LastCrawlStarted ?? ActivityCutoffUtc));
                 }
-                foreach (var character in charactersToProcess)
-                {
-                    _playerCharacterWorkCount.AddOrUpdate(playerValue.PlayerId, 1, (_, existing) => existing + 1);
-                    var workItem = new CharacterWorkItem(playerValue.PlayerId, character.Key, lastPlayedActivityDate ?? ActivityCutoffUtc);
-                    await _output.WriteAsync(workItem, ct);
-                    queuedCharacters++;
-                }
 
-                if (queuedCharacters == 0)
+                var allReports = new ConcurrentBag<ActivityReport>();
+                var characterTasks = charactersToProcess.Select(character =>
+                    GetCharacterActivityReports(player, lastPlayedActivityDate ?? ActivityCutoffUtc, character.Key, allReports, ct)
+                ).ToList();
+
+                await Task.WhenAll(characterTasks);
+
+                if (allReports.IsEmpty)
                 {
                     player.NeedsFullCheck = false;
                     playerValue.Status = PlayerQueueStatus.Completed;
                     playerValue.ProcessedAt = DateTime.UtcNow;
-                    _playerCharacterWorkCount.TryRemove(playerValue.PlayerId, out _);
                     await context.SaveChangesAsync(ct);
-                    _logger.LogInformation("No new activities for player {PlayerId}; marked as completed without queueing characters.", playerValue.PlayerId);
+                    _logger.LogInformation("No new activities for player {PlayerId}; marked as completed.", playerValue.PlayerId);
                 }
                 else
                 {
                     player.LastCrawlStarted = DateTime.UtcNow;
                     await context.SaveChangesAsync(ct);
-                    _logger.LogInformation("Queued {CharacterCount} characters for player {PlayerId}.", queuedCharacters, playerValue.PlayerId);
+                    
+                    await CreateActivityReports(allReports, playerId, ct);
+                    
+                    await using var finalContext = await _contextFactory.CreateDbContextAsync(ct);
+                    var finalPlayerQueueItem = await finalContext.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == playerId, ct);
+                    var finalPlayer = await finalContext.Players.FirstOrDefaultAsync(p => p.Id == playerId, ct);
+                    
+                    if (finalPlayerQueueItem != null)
+                    {
+                        finalPlayerQueueItem.Status = PlayerQueueStatus.Completed;
+                        finalPlayerQueueItem.ProcessedAt = DateTime.UtcNow;
+                    }
+                    
+                    await ComputeLeaderboardsForPlayer(playerId, ct);
+                    
+                    if (finalPlayer != null)
+                    {
+                        finalPlayer.LastCrawlCompleted = DateTime.UtcNow;
+                        finalPlayer.NeedsFullCheck = false;
+                    }
+                    
+                    await finalContext.SaveChangesAsync(ct);
+                    
+                    _logger.LogInformation("Created {ReportCount} activity reports for player {PlayerId}.", allReports.Count, playerValue.PlayerId);
                 }
             }
             catch (DestinyApiException ex) when (ex.ErrorCode == 1601)
@@ -278,6 +299,207 @@ namespace Crawler.Services
                     await context.SaveChangesAsync(ct);
                     _logger.LogInformation("Updated last played character emblem for player {PlayerId}.", id);
                 }
+            }
+        }
+
+        public async Task GetCharacterActivityReports(Player player, DateTime lastPlayedActivityDate, string characterId, ConcurrentBag<ActivityReport> reportsBag, CancellationToken ct)
+        {
+            lastPlayedActivityDate = player.NeedsFullCheck ? ActivityCutoffUtc : lastPlayedActivityDate;
+
+            await using var context = await _contextFactory.CreateDbContextAsync(ct);
+
+            var page = 0;
+            var hasReachedLastUpdate = false;
+            var activityCount = 250;
+            var existingReportIds = player.NeedsFullCheck ? new HashSet<long>() : await context.ActivityReportPlayers
+                .Where(arp => arp.PlayerId == player.Id)
+                .Select(arp => arp.ActivityReportId)
+                .ToHashSetAsync(ct);
+
+            try
+            {
+                while (!hasReachedLastUpdate)
+                {
+                    var response = await _client.GetHistoricalStatsForCharacter(player.Id, player.MembershipType, characterId, page, activityCount, ct);
+                    if (response.Response?.activities == null || !response.Response.activities.Any())
+                        break;
+                    page++;
+                    var activityHashMap = await _cache.GetActivityHashMapAsync(_redis);
+                    foreach (var activityReport in response.Response.activities)
+                    {
+                        hasReachedLastUpdate = activityReport.period <= lastPlayedActivityDate;
+                        if (activityReport.period < ActivityCutoffUtc || hasReachedLastUpdate)
+                            break;
+                        var rawHash = activityReport.activityDetails.referenceId;
+                        if (!activityHashMap.TryGetValue(rawHash, out var canonicalId))
+                            continue;
+
+                        if (!long.TryParse(activityReport.activityDetails.instanceId, out var instanceId))
+                            continue;
+
+                        if (existingReportIds.Contains(instanceId))
+                            continue;
+
+                        reportsBag.Add(new ActivityReport
+                        {
+                            Id = instanceId,
+                            ActivityId = canonicalId,
+                            Date = activityReport.period,
+                            NeedsFullCheck = activityReport.values["playerCount"].basic.value != 1,
+                            Players = new List<ActivityReportPlayer>
+                            {
+                                new ActivityReportPlayer
+                                {
+                                    PlayerId = player.Id,
+                                    ActivityReportId = instanceId,
+                                    SessionId = reportsBag.Count(ar => ar.Id == instanceId && ar.Players.Any(arp => arp.PlayerId == player.Id)) + 1,
+                                    Score = (int)activityReport.values["score"].basic.value,
+                                    ActivityId = canonicalId,
+                                    Duration = TimeSpan.FromSeconds(activityReport.values["activityDurationSeconds"].basic.value),
+                                    Completed = activityReport.values["completed"].basic.value == 1 && activityReport.values["completionReason"].basic.value != 2.0,
+                                }
+                            }
+                        });
+
+                    }
+                    if (response.Response.activities.Last().period < ActivityCutoffUtc)
+                        break;
+                }
+            }
+            catch (DestinyApiException ex) when (ex.ErrorCode == 1665)
+            {
+                _logger.LogWarning(ex, "Historical stats throttled for player {PlayerId} character {CharacterId}.", player.Id, characterId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching activity reports for player: {PlayerId}, character: {CharacterId}", player.Id, characterId);
+                throw;
+            }
+        }
+
+        private async Task CreateActivityReports(IEnumerable<ActivityReport> activityReports, long playerId, CancellationToken ct)
+        {
+            var reportList = activityReports.ToList();
+            if (reportList.Count == 0)
+            {
+                return;
+            }
+
+            await using var context = await _contextFactory.CreateDbContextAsync(ct);
+
+            var playerIds = reportList.SelectMany(r => r.Players).Select(p => p.PlayerId).Distinct().ToList();
+
+            foreach (var report in reportList)
+            {
+                while (!await _redis.StringSetAsync($"locks:activities:{report.Id}", report.Id, when: When.NotExists, expiry: TimeSpan.FromSeconds(10)))
+                {
+                    await Task.Delay(Random.Shared.Next(50, 200));
+                }
+                try
+                {
+                    var existing = await context.ActivityReports.Include(ar => ar.Players).FirstOrDefaultAsync(ar => ar.Id == report.Id, ct);
+
+                    if (existing is null)
+                    {
+                        context.ActivityReports.Add(report);
+                    }
+                    else
+                    {
+                        foreach (var incomingPlayerReport in report.Players)
+                        {
+                            var existingPlayerReport = existing.Players.FirstOrDefault(arp => arp.PlayerId == playerId && arp.SessionId == incomingPlayerReport.SessionId);
+
+                            if (existingPlayerReport is null)
+                            {
+                                context.ActivityReportPlayers.Add(incomingPlayerReport);
+                                continue;
+                            }
+
+                            if (IsPlayerReportChanged(existingPlayerReport, incomingPlayerReport))
+                            {
+                                existingPlayerReport.SessionId = incomingPlayerReport.SessionId;
+                                existingPlayerReport.Score = incomingPlayerReport.Score;
+                                existingPlayerReport.Completed = incomingPlayerReport.Completed;
+                                existingPlayerReport.Duration = incomingPlayerReport.Duration;
+                                existingPlayerReport.ActivityId = incomingPlayerReport.ActivityId;
+                            }
+                        }
+
+                        existing.NeedsFullCheck |= report.NeedsFullCheck;
+                    }
+                    await context.SaveChangesAsync(ct);
+                }
+                finally
+                {
+                    await _redis.KeyDeleteAsync($"locks:activities:{report.Id}");
+                }
+            }
+        }
+
+        private async Task ComputeLeaderboardsForPlayer(long playerId, CancellationToken ct)
+        {
+            await using var context = await _contextFactory.CreateDbContextAsync(ct);
+            var activityReports = await context.ActivityReportPlayers
+                .AsNoTracking()
+                .Where(arp => arp.PlayerId == playerId)
+                .GroupBy(arp => arp.ActivityId)
+                .ToDictionaryAsync(
+                    arpd => arpd.Key,
+                    arpd => arpd.ToList(),
+                    ct);
+            foreach (var activityReport in activityReports)
+            {
+                foreach (var leaderboardType in Enum.GetValues<LeaderboardTypes>())
+                {
+                    var leaderboardEntry = await context.PlayerLeaderboards.FirstOrDefaultAsync(pl => pl.PlayerId == playerId && pl.ActivityId == activityReport.Key && pl.LeaderboardType == leaderboardType);
+                    if (leaderboardEntry != null)
+                    {
+                        leaderboardEntry.Data = CalculateData(activityReport.Value, leaderboardType);
+                    }
+                    else
+                    {
+                        var newLeaderboardEntry = new PlayerLeaderboard()
+                        {
+                            ActivityId = activityReport.Key,
+                            PlayerId = playerId,
+                            LeaderboardType = leaderboardType,
+                            Data = CalculateData(activityReport.Value, leaderboardType)
+                        };
+                        if (newLeaderboardEntry.Data == 0)
+                        {
+                            continue;
+                        }
+                        context.PlayerLeaderboards.Add(newLeaderboardEntry);
+                    }
+                }
+                await context.SaveChangesAsync();
+            }
+        }
+
+        private static bool IsPlayerReportChanged(ActivityReportPlayer existing, ActivityReportPlayer incoming)
+        {
+            return existing.Score != incoming.Score
+                || existing.SessionId != incoming.SessionId
+                || existing.Completed != incoming.Completed
+                || existing.Duration != incoming.Duration
+                || existing.ActivityId != incoming.ActivityId;
+        }
+
+        private static long CalculateData(List<ActivityReportPlayer> reports, LeaderboardTypes leaderboardType)
+        {
+            if (reports.Count(arp => arp.Completed) == 0)
+            {
+                return 0;
+            }
+            switch (leaderboardType)
+            {
+                case LeaderboardTypes.TotalCompletions:
+                    return reports.Count(arp => arp.Completed);
+                case LeaderboardTypes.FastestCompletion:
+                    return (long)reports.Where(arp => arp.Completed).Min(arp => arp.Duration).TotalSeconds;
+                case LeaderboardTypes.HighestScore:
+                    return reports.Where((arp) => arp.Completed).Max(arp => arp.Score);
+                default: return 0;
             }
         }
     }

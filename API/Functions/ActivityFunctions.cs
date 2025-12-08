@@ -141,7 +141,7 @@ public class ActivityFunctions
     }
 
     [Function(nameof(BuildActivityMappings))]
-    public async Task BuildActivityMappings([TimerTrigger("0 0 11 * * *")] TimerInfo timer)
+    public async Task BuildActivityMappings([TimerTrigger("0 0 * * * *")] TimerInfo timer)
     {
         using var activity = APITelemetry.StartActivity("ActivityFunctions.BuildActivityMappings");
         activity?.SetTag("api.function.name", nameof(BuildActivityMappings));

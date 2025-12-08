@@ -175,4 +175,22 @@ public class PlayerFunctions
             return new StatusCodeResult(500);
         }
     }
+
+    [Function(nameof(CrawlPlayers))]
+    public async Task CrawlPlayers([TimerTrigger("0 0 0 * * *")] TimerInfo timer)
+    {
+        using var activity = APITelemetry.StartActivity("PlayerFunctions.CrawlPlayers");
+        activity?.SetTag("api.function.name", nameof(CrawlPlayers));
+
+        try
+        {
+            await _queryService.LoadCrawler();
+        }
+        catch (Exception ex)
+        {
+            activity?.AddException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            _logger.LogError(ex, "Error occurred during player crawl.");
+        }
+    }
 }

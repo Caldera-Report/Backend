@@ -15,7 +15,7 @@ namespace Crawler.Services
         private readonly IDestiny2ApiClient _client;
         private readonly ILogger<ActivityReportCrawler> _logger;
         private readonly IMemoryCache _cache;
-        private readonly IConnectionMultiplexer _redis;
+        private readonly IDatabase _redis;
 
         private const int MaxConcurrentTasks = 150;
 
@@ -30,7 +30,7 @@ namespace Crawler.Services
             _contextFactory = contextFactory;
             _client = client;
             _cache = cache;
-            _redis = redis;
+            _redis = redis.GetDatabase();
         }
 
         protected override async Task ExecuteAsync(CancellationToken ct)
@@ -132,9 +132,6 @@ namespace Crawler.Services
                     return;
                 }
 
-                activityReport.Date = pgcr.period;
-                activityReport.ActivityId = activityId;
-
                 var publicEntries = pgcr.entries.Where(e => e.player.destinyUserInfo.isPublic).ToList();
 
                 if (publicEntries.Count > 0)
@@ -163,82 +160,31 @@ namespace Crawler.Services
 
                         if (newPlayerData.Count > 0)
                         {
-                            var parameters = new List<NpgsqlParameter>();
-                            var valueStrings = new List<string>();
-
-                            for (int i = 0; i < newPlayerData.Count; i++)
+                            foreach (var player in newPlayerData)
                             {
-                                var p = newPlayerData[i];
-                                parameters.Add(new NpgsqlParameter($"pId{i}", p.Id));
-                                parameters.Add(new NpgsqlParameter($"pMembershipType{i}", p.MembershipType));
-                                parameters.Add(new NpgsqlParameter($"pDisplayName{i}", p.DisplayName));
-                                parameters.Add(new NpgsqlParameter($"pDisplayNameCode{i}", p.DisplayNameCode));
-                                valueStrings.Add($"(@pId{i}, @pMembershipType{i}, @pDisplayName{i}, @pDisplayNameCode{i}, true)");
-                            }
-
-                            var playerSql = $@"
-                                INSERT INTO ""Players"" (""Id"", ""MembershipType"", ""DisplayName"", ""DisplayNameCode"", ""NeedsFullCheck"")
-                                VALUES {string.Join(", ", valueStrings)}
-                                ON CONFLICT (""Id"") DO NOTHING
-                                RETURNING ""Id""";
-
-                            var insertedPlayerIds = await context.Database
-                                .SqlQueryRaw<long>(playerSql, parameters.ToArray())
-                                .ToListAsync(ct);
-
-                            if (insertedPlayerIds.Count > 0)
-                            {
-                                var playerQueueItems = insertedPlayerIds.Select(id => new PlayerCrawlQueue
+                                while (!await _redis.StringSetAsync($"lock:player:{player.Id}", player.Id, when: When.NotExists, expiry: TimeSpan.FromSeconds(10)))
                                 {
-                                    PlayerId = id
-                                });
-                                context.PlayerCrawlQueue.AddRange(playerQueueItems);
-                            }
-                        }
-                    }
+                                    await Task.Delay(Random.Shared.Next(50, 200), ct);
+                                }
 
-                    var grouped = publicEntries.GroupBy(e => long.Parse(e.player.destinyUserInfo.membershipId)).ToDictionary(g => g.Key, g => g.ToList());
-                    var existingActivityReportPlayers = await context.ActivityReportPlayers
-                        .Where(arp => arp.ActivityReportId == reportId && grouped.Keys.Contains(arp.PlayerId))
-                        .ToListAsync(ct);
-
-                    foreach (var group in grouped)
-                    {
-                        var activityReportPlayer = new ActivityReportPlayer
-                        {
-                            PlayerId = group.Key,
-                            ActivityReportId = reportId,
-                            Score = group.Value.Sum(e => (int)e.values.score.basic.value),
-                            Completed = group.Value.All(e => e.values.completed.basic.value == 1 && e.values.completionReason.basic.value != 2.0),
-                            Duration = TimeSpan.FromSeconds(group.Value.Sum(e => e.values.activityDurationSeconds.basic.value)),
-                            ActivityId = activityId
-                        };
-
-                        if (!existingActivityReportPlayers.Any(earp => earp.PlayerId == activityReportPlayer.PlayerId))
-                        {
-                            context.ActivityReportPlayers.Add(activityReportPlayer);
-                        }
-                        else
-                        {
-                            var oldActivityReportPlayer = existingActivityReportPlayers.FirstOrDefault(earp => earp.PlayerId == activityReportPlayer.PlayerId);
-
-                            if (oldActivityReportPlayer is not null && (oldActivityReportPlayer.Score != activityReportPlayer.Score ||
-                                    oldActivityReportPlayer.Duration != activityReportPlayer.Duration ||
-                                    oldActivityReportPlayer.Completed != activityReportPlayer.Completed))
-                            {
-                                oldActivityReportPlayer.Score = activityReportPlayer.Score;
-                                oldActivityReportPlayer.Duration = activityReportPlayer.Duration;
-                                oldActivityReportPlayer.Completed = activityReportPlayer.Completed;
-                            }
-                            else if (oldActivityReportPlayer is null)
-                            {
-                                _logger.LogWarning("Inconsistent state for player {PlayerId} in report {ReportId}", activityReportPlayer.PlayerId, reportId);
+                                try
+                                {
+                                    if (!await context.Players.AnyAsync(p => p.Id == player.Id, ct))
+                                    {
+                                        context.Players.Add(player);
+                                        context.PlayerCrawlQueue.Add(new PlayerCrawlQueue(player.Id));
+                                        await context.SaveChangesAsync(ct);
+                                    }
+                                }
+                                finally
+                                {
+                                    await _redis.KeyDeleteAsync($"lock:player:{player.Id}");
+                                }
                             }
                         }
                     }
                 }
 
-                await context.SaveChangesAsync(ct);
                 _logger.LogInformation("Processed activity report {ReportId} with {PlayerCount} players.", reportId, publicEntries.Count);
             }
             catch (Exception ex)
