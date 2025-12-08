@@ -173,29 +173,29 @@ namespace Crawler.Services
                 {
                     player.LastCrawlStarted = DateTime.UtcNow;
                     await context.SaveChangesAsync(ct);
-                    
+
                     await CreateActivityReports(allReports, playerId, ct);
-                    
+
                     await using var finalContext = await _contextFactory.CreateDbContextAsync(ct);
                     var finalPlayerQueueItem = await finalContext.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == playerId, ct);
                     var finalPlayer = await finalContext.Players.FirstOrDefaultAsync(p => p.Id == playerId, ct);
-                    
+
                     if (finalPlayerQueueItem != null)
                     {
                         finalPlayerQueueItem.Status = PlayerQueueStatus.Completed;
                         finalPlayerQueueItem.ProcessedAt = DateTime.UtcNow;
                     }
-                    
+
                     await ComputeLeaderboardsForPlayer(playerId, ct);
-                    
+
                     if (finalPlayer != null)
                     {
                         finalPlayer.LastCrawlCompleted = DateTime.UtcNow;
                         finalPlayer.NeedsFullCheck = false;
                     }
-                    
+
                     await finalContext.SaveChangesAsync(ct);
-                    
+
                     _logger.LogInformation("Created {ReportCount} activity reports for player {PlayerId}.", allReports.Count, playerValue.PlayerId);
                 }
             }
