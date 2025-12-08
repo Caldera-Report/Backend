@@ -7,13 +7,12 @@ public static class CacheHelper
 {
     private const string ActivityHashMapCacheKey = "activityHashMappings";
 
-    public static async Task<Dictionary<long, long>> GetActivityHashMapAsync(this IMemoryCache cache, IConnectionMultiplexer redis)
+    public static async Task<Dictionary<long, long>> GetActivityHashMapAsync(this IMemoryCache cache, IDatabase db)
     {
         return await cache.GetOrCreateAsync(ActivityHashMapCacheKey, async entry =>
         {
             entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(15);
 
-            var db = redis.GetDatabase();
             var entries = await db.HashGetAllAsync(ActivityHashMapCacheKey);
 
             return entries.ToDictionary(

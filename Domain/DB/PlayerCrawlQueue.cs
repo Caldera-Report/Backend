@@ -10,5 +10,12 @@ namespace Domain.DB
         public DateTime? ProcessedAt { get; set; }
         public PlayerQueueStatus Status { get; set; } = PlayerQueueStatus.Queued;
         public int Attempts { get; set; } = 0;
+
+        public PlayerCrawlQueue() { }
+        public PlayerCrawlQueue(long id)
+        {
+            Id = Guid.NewGuid();
+            PlayerId = id;
+        }
     }
 }

@@ -5,11 +5,11 @@ using Domain.DB;
 using Domain.DestinyApi;
 using Domain.DTO;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
-using System.Threading.Channels;
 using Domain.Enums;
 
 namespace Crawler.Tests;
@@ -41,7 +41,14 @@ public class PlayerCrawlerTests
         }
 
         var contextFactory = new TestDbContextFactory(options);
-        var channel = Channel.CreateUnbounded<CharacterWorkItem>();
+        var cache = new MemoryCache(new MemoryCacheOptions());
+
+        var databaseMock = new Mock<IDatabase>();
+        var multiplexerMock = new Mock<IConnectionMultiplexer>();
+        multiplexerMock
+            .Setup(m => m.GetDatabase(Moq.It.IsAny<int>(), Moq.It.IsAny<object>()))
+            .Returns(databaseMock.Object);
+
         var clientMock = new Mock<IDestiny2ApiClient>();
 
         var apiResponse = new DestinyApiResponse<DestinyProfileResponse>
@@ -89,14 +96,12 @@ public class PlayerCrawlerTests
         clientMock.Setup(client => client.GetCharactersForPlayer(playerId, 2, Moq.It.IsAny<CancellationToken>()))
             .ReturnsAsync(apiResponse);
 
-        var playerCharacterWorkCount = new ConcurrentDictionary<long, int>();
-
         var crawler = new PlayerCrawler(
             clientMock.Object,
-            channel.Writer,
             NullLogger<PlayerCrawler>.Instance,
             contextFactory,
-            playerCharacterWorkCount);
+            cache,
+            multiplexerMock.Object);
 
         await using var context = await contextFactory.CreateDbContextAsync();
         var characters = await crawler.GetCharactersForPlayer(playerId, 2, context, CancellationToken.None);
@@ -131,17 +136,22 @@ public class PlayerCrawlerTests
 
         await using var context = new AppDbContext(options);
 
-        var clientMock = new Mock<IDestiny2ApiClient>();
-        var channel = Channel.CreateUnbounded<CharacterWorkItem>();
+        var cache = new MemoryCache(new MemoryCacheOptions());
 
-        var playerCharacterWorkCount = new ConcurrentDictionary<long, int>();
+        var databaseMock = new Mock<IDatabase>();
+        var multiplexerMock = new Mock<IConnectionMultiplexer>();
+        multiplexerMock
+            .Setup(m => m.GetDatabase(Moq.It.IsAny<int>(), Moq.It.IsAny<object>()))
+            .Returns(databaseMock.Object);
+
+        var clientMock = new Mock<IDestiny2ApiClient>();
 
         var crawler = new PlayerCrawler(
             clientMock.Object,
-            channel.Writer,
             NullLogger<PlayerCrawler>.Instance,
             new TestDbContextFactory(options),
-            playerCharacterWorkCount);
+            cache,
+            multiplexerMock.Object);
 
         var profileResponse = new DestinyProfileResponse
         {

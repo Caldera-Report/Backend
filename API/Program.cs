@@ -6,23 +6,21 @@ using API.Telemetry;
 using Domain.Configuration;
 using Domain.Data;
 using Domain.Serializers;
-using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using OpenTelemetry;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using System.Diagnostics;
-using Npgsql;
 using StackExchange.Redis;
-using System.Linq;
+using System.Diagnostics;
 using System.Text.Json;
 
 var builder = FunctionsApplication.CreateBuilder(args);
@@ -120,6 +118,18 @@ builder.Services.AddDbContextPool<AppDbContext>(options =>
     options.EnableServiceProviderCaching();
     options.EnableSensitiveDataLogging(builder.Environment.IsDevelopment());
 }, poolSize: 64);
+
+builder.Services.AddDbContextFactory<AppDbContext>(options =>
+{
+    options.UseNpgsql(builder.Configuration.GetConnectionString("PostgreSqlConnectionString"), npgsqlOptions =>
+    {
+        npgsqlOptions.EnableRetryOnFailure(
+            maxRetryCount: 3,
+            maxRetryDelay: TimeSpan.FromSeconds(30),
+            errorCodesToAdd: null);
+    });
+    options.EnableSensitiveDataLogging(builder.Environment.IsDevelopment());
+});
 
 
 builder.Services.AddOptions<Destiny2Options>()

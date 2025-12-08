@@ -3,17 +3,20 @@ using System;
 using Domain.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace Worker.Migrations
+namespace API.Domain.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class WorkerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251207055920_ReworkingLeaderboardStorage")]
+    partial class ReworkingLeaderboardStorage
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -79,11 +82,11 @@ namespace Worker.Migrations
                     b.Property<long>("ActivityReportId")
                         .HasColumnType("bigint");
 
-                    b.Property<long>("PlayerId")
+                    b.Property<long>("CharacterId")
                         .HasColumnType("bigint");
 
-                    b.Property<int>("SessionId")
-                        .HasColumnType("integer");
+                    b.Property<long>("PlayerId")
+                        .HasColumnType("bigint");
 
                     b.Property<long>("ActivityId")
                         .HasColumnType("bigint");
@@ -97,7 +100,7 @@ namespace Worker.Migrations
                     b.Property<int>("Score")
                         .HasColumnType("integer");
 
-                    b.HasKey("ActivityReportId", "PlayerId", "SessionId");
+                    b.HasKey("ActivityReportId", "CharacterId", "PlayerId");
 
                     b.HasIndex("PlayerId");
 

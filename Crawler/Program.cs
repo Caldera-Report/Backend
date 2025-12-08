@@ -97,31 +97,12 @@ builder.Services.AddSingleton<RateLimiterRegistry>();
 builder.Services.AddHttpClient<IDestiny2ApiClient, Destiny2ApiClient>();
 builder.Services.AddMemoryCache();
 
-// Shared state
-var playerCharacterWorkCount = new ConcurrentDictionary<long, int>();
-
-// Channels
-var characterChannel = Channel.CreateBounded<CharacterWorkItem>(new BoundedChannelOptions(10) { FullMode = BoundedChannelFullMode.Wait });
-
-builder.Services.AddSingleton(characterChannel.Reader);
-builder.Services.AddSingleton(characterChannel.Writer);
-
 // Background services
 builder.Services.AddHostedService(sp =>
     new PlayerCrawler(
         sp.GetRequiredService<IDestiny2ApiClient>(),
-        characterChannel.Writer,
         sp.GetRequiredService<ILogger<PlayerCrawler>>(),
         sp.GetRequiredService<IDbContextFactory<AppDbContext>>(),
-        playerCharacterWorkCount));
-
-builder.Services.AddHostedService(sp =>
-    new CharacterCrawler(
-        sp.GetRequiredService<IDestiny2ApiClient>(),
-        characterChannel.Reader,
-        sp.GetRequiredService<ILogger<CharacterCrawler>>(),
-        sp.GetRequiredService<IDbContextFactory<AppDbContext>>(),
-        playerCharacterWorkCount,
         sp.GetRequiredService<IMemoryCache>(),
         sp.GetRequiredService<IConnectionMultiplexer>()));
 

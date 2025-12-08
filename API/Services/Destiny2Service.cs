@@ -311,7 +311,7 @@ namespace API.Services
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             var grouped = allActivities.Values
-                .Where(d => canonicalNames.Contains(NormalizeActivityName(d.displayProperties.name)))
+                .Where(d => canonicalNames.Any(n => n.Contains(NormalizeActivityName(d.displayProperties.name))))
                 .GroupBy(d => NormalizeActivityName(d.displayProperties.name))
                 .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 

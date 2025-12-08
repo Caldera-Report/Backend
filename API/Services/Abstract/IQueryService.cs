@@ -17,5 +17,6 @@ namespace API.Services.Abstract
         public Task<DateTime> GetPlayerLastPlayedActivityDate(long membershipId);
         public Task<List<PlayerSearchDto>> SearchForPlayer(string query);
         public Task<List<LeaderboardResponse>> GetLeaderboardsForPlayer(string playerName, long activityId, LeaderboardTypes type);
+        public Task LoadCrawler();
     }
 }
