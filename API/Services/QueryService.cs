@@ -127,7 +127,7 @@ namespace API.Services
                 var recent = reports.OrderByDescending(r => r.Date).FirstOrDefault();
                 return new ActivityReportListDto
                 {
-                    Reports = reports.OrderByDescending(arpd => arpd.Date).ToList(),
+                    Reports = reports.OrderBy(arpd => arpd.Date).ToList(),
                     Average = average,
                     Best = fastest,
                     Recent = recent,
