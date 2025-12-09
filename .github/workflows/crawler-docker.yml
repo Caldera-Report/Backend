@@ -33,6 +33,7 @@ jobs:
           context: .
           file: Crawler/Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             chopstickleg/caldera-report-crawler:latest
             chopstickleg/caldera-report-crawler:${{ github.sha }}
@@ -43,6 +44,7 @@ jobs:
           context: .
           file: Crawler.Frontend/Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             chopstickleg/caldera-report-crawler-frontend:latest
             chopstickleg/caldera-report-crawler-frontend:${{ github.sha }}
