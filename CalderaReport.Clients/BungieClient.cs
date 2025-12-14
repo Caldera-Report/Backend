@@ -127,29 +127,10 @@ public class BungieClient : IBungieClient
     public async Task<DestinyApiResponse<DestinyProfileResponse>> GetCharactersForPlayer(long membershipId, int membershipType)
     {
         var url = $"Destiny2/{membershipType}/Profile/{membershipId}?components=100,200"; //Profile and Characters components
-        try
-        {
-            using var response = await SendWithRetryAsync("GetCharactersForPlayer", () => _httpClient.GetAsync(url));
-            var content = await response.Content.ReadAsStringAsync();
-            return JsonSerializer.Deserialize<DestinyApiResponse<DestinyProfileResponse>>(content)
-                ?? throw new InvalidOperationException("Failed to deserialize response.");
-        }
-        catch (DestinyApiException ex) when (ex.ErrorCode == 1665 && ex.Error is not null) // user is private
-        {
-            var error = ex.Error;
-            return new DestinyApiResponse<DestinyProfileResponse>
-            {
-                Response = new DestinyProfileResponse
-                {
-                    characters = new DictionaryComponentResponseOfint64AndDestinyCharacterComponent()
-                },
-                ErrorStatus = error.ErrorStatus,
-                Message = error.Message,
-                MessageData = error.MessageData,
-                ErrorCode = error.ErrorCode,
-                ThrottleSeconds = error.ThrottleSeconds
-            };
-        }
+        using var response = await SendWithRetryAsync("GetCharactersForPlayer", () => _httpClient.GetAsync(url));
+        var content = await response.Content.ReadAsStringAsync();
+        return JsonSerializer.Deserialize<DestinyApiResponse<DestinyProfileResponse>>(content)
+            ?? throw new InvalidOperationException("Failed to deserialize response.");
     }
 
     public async Task<DestinyApiResponse<DestinyActivityHistoryResults>> GetHistoricalStatsForCharacter(long destinyMembershipId, int membershipType, string characterId, int page, int activityCount)
