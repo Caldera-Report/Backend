@@ -1,11 +1,8 @@
-﻿using CalderaReport.Crawler.Clients.Abstract;
-using CalderaReport.Crawler.Helpers;
-using Domain.Data;
-using Domain.DB;
-using Domain.DestinyApi;
-using Domain.Enums;
+﻿using CalderaReport.Domain.Data;
+using CalderaReport.Domain.DB;
+using CalderaReport.Domain.Enums;
+using CalderaReport.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
 
@@ -14,26 +11,18 @@ namespace CalderaReport.Crawler.Services
     public class PlayerCrawler : BackgroundService
     {
         private IDbContextFactory<AppDbContext> _contextFactory;
-        private readonly IDestiny2ApiClient _client;
         private readonly ILogger<PlayerCrawler> _logger;
-        private readonly IMemoryCache _cache;
-        private readonly IDatabase _redis;
+        private readonly ICrawlerService _crawlerService;
 
         private const int MaxConcurrentPlayers = 20;
         private static readonly DateTime ActivityCutoffUtc = new DateTime(2025, 7, 15);
 
         public PlayerCrawler(
-            IDestiny2ApiClient client,
             ILogger<PlayerCrawler> logger,
-            IDbContextFactory<AppDbContext> contextFactory,
-            IMemoryCache cache,
-            IConnectionMultiplexer redis)
+            IDbContextFactory<AppDbContext> contextFactory)
         {
-            _client = client;
             _logger = logger;
             _contextFactory = contextFactory;
-            _cache = cache;
-            _redis = redis.GetDatabase();
         }
 
         protected override async Task ExecuteAsync(CancellationToken ct)
@@ -137,12 +126,26 @@ namespace CalderaReport.Crawler.Services
                 }
 
                 // Get characters
+                var charactersToProcess = await _crawlerService.GetCharactersForCrawl(player);
                 // Get last played activity date
+                var lastPlayedActivityDate = await _crawlerService.GetLastPlayedActivityDateForPlayer(player);
 
                 var allReports = new ConcurrentBag<ActivityReport>();
-                var characterTasks = charactersToProcess.Select(character =>
-                    GetCharacterActivityReports(player, lastPlayedActivityDate, character.Key, allReports, ct)
-                ).ToList();
+
+                var characterTasks = charactersToProcess.Select(character => Task.Run(async () =>
+                {
+                    var reports = await _crawlerService.CrawlCharacter(player, character.Key, lastPlayedActivityDate);
+
+                    if (reports is null)
+                    {
+                        return;
+                    }
+
+                    foreach (var report in reports)
+                    {
+                        allReports.Add(report);
+                    }
+                })).ToList();
 
                 await Task.WhenAll(characterTasks);
 
@@ -151,19 +154,19 @@ namespace CalderaReport.Crawler.Services
                     player.NeedsFullCheck = false;
                     playerValue.Status = PlayerQueueStatus.Completed;
                     playerValue.ProcessedAt = DateTime.UtcNow;
-                    await context.SaveChangesAsync(ct);
+                    await context.SaveChangesAsync();
                     _logger.LogInformation("No new activities for player {PlayerId}; marked as completed.", playerValue.PlayerId);
                 }
                 else
                 {
                     player.LastCrawlStarted = DateTime.UtcNow;
-                    await context.SaveChangesAsync(ct);
+                    await context.SaveChangesAsync();
 
-                    await CreateActivityReports(allReports, playerId, ct);
+                    await CreateActivityReports(allReports, playerId);
 
-                    await using var finalContext = await _contextFactory.CreateDbContextAsync(ct);
-                    var finalPlayerQueueItem = await finalContext.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == playerId, ct);
-                    var finalPlayer = await finalContext.Players.FirstOrDefaultAsync(p => p.Id == playerId, ct);
+                    await using var finalContext = await _contextFactory.CreateDbContextAsync();
+                    var finalPlayerQueueItem = await finalContext.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == playerId);
+                    var finalPlayer = await finalContext.Players.FirstOrDefaultAsync(p => p.Id == playerId);
 
                     if (finalPlayerQueueItem != null)
                     {

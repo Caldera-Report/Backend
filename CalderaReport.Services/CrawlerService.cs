@@ -3,12 +3,11 @@ using CalderaReport.Domain.Data;
 using CalderaReport.Domain.DB;
 using CalderaReport.Domain.DestinyApi;
 using CalderaReport.Domain.Enums;
+using CalderaReport.Domain.Manifest;
 using CalderaReport.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
 using StackExchange.Redis;
-using System;
-using System.Numerics;
+using System.Collections.Concurrent;
 
 namespace CalderaReport.Services;
 
@@ -19,13 +18,17 @@ public class CrawlerService : ICrawlerService
     private readonly IDatabase _redis;
     private readonly IDbContextFactory<AppDbContext> _contextFactory;
 
-    public CrawlerService(IDbContextFactory<AppDbContext> contextFactory, IBungieClient bungieClient)
+    private readonly SemaphoreSlim _activityHashMapSemaphore = new SemaphoreSlim(1, 1);
+    private readonly ParallelOptions _parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
+
+    public CrawlerService(IDbContextFactory<AppDbContext> contextFactory, IBungieClient bungieClient, IConnectionMultiplexer redis)
     {
         _contextFactory = contextFactory;
         _bungieClient = bungieClient;
+        _redis = redis.GetDatabase();
     }
 
-    public async Task<IEnumerable<KeyValuePair<string, DestinyCharacterComponent>>> GetCharactersForCrawl(Player player)
+    public async Task<Dictionary<string, DestinyCharacterComponent>> GetCharactersForCrawl(Player player)
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
 
@@ -37,7 +40,7 @@ public class CrawlerService : ICrawlerService
         }
         else
         {
-            return characters.Where(c => c.Value.dateLastPlayed > (player.LastCrawlStarted ?? ActivityCutoffUtc)).ToList();
+            return characters.Where(c => c.Value.dateLastPlayed > (player.LastCrawlStarted ?? ActivityCutoffUtc)).ToDictionary();
         }
     }
 
@@ -109,65 +112,148 @@ public class CrawlerService : ICrawlerService
             .Select(arp => arp.ActivityReportId)
             .ToHashSetAsync();
 
-        try
+        var reportsBag = new ConcurrentBag<ActivityReport>();
+
+        while (!hasReachedLastUpdate)
         {
-            while (!hasReachedLastUpdate)
+            var response = await _bungieClient.GetHistoricalStatsForCharacter(player.Id, player.MembershipType, characterId, page, activityCount);
+            if (response.Response?.activities == null || !response.Response.activities.Any())
+                break;
+            page++;
+            var activityHashMap = await GetActivityHashMap();
+            Parallel.ForEach(response.Response.activities, _parallelOptions, activityReport =>
             {
-                var response = await _bungieClient.GetHistoricalStatsForCharacter(player.Id, player.MembershipType, characterId, page, activityCount);
-                if (response.Response?.activities == null || !response.Response.activities.Any())
-                    break;
-                page++;
-                var activityHashMap = await _redis.GetActivityHashMapAsync(_redis);
-                foreach (var activityReport in response.Response.activities)
+                hasReachedLastUpdate = activityReport.period <= lastPlayedActivityDate;
+                if (activityReport.period < ActivityCutoffUtc || hasReachedLastUpdate)
+                    return;
+                var rawHash = activityReport.activityDetails.referenceId;
+                if (!activityHashMap.TryGetValue(rawHash, out var canonicalId))
+                    return;
+
+                if (!long.TryParse(activityReport.activityDetails.instanceId, out var instanceId))
+                    return;
+
+                if (existingReportIds.Contains(instanceId))
+                    return;
+
+                reportsBag.Add(new ActivityReport
                 {
-                    hasReachedLastUpdate = activityReport.period <= lastPlayedActivityDate;
-                    if (activityReport.period < ActivityCutoffUtc || hasReachedLastUpdate)
-                        break;
-                    var rawHash = activityReport.activityDetails.referenceId;
-                    if (!activityHashMap.TryGetValue(rawHash, out var canonicalId))
-                        continue;
-
-                    if (!long.TryParse(activityReport.activityDetails.instanceId, out var instanceId))
-                        continue;
-
-                    if (existingReportIds.Contains(instanceId))
-                        continue;
-
-                    reportsBag.Add(new ActivityReport
-                    {
-                        Id = instanceId,
-                        ActivityId = canonicalId,
-                        Date = activityReport.period,
-                        NeedsFullCheck = activityReport.values["playerCount"].basic.value != 1,
-                        Players = new List<ActivityReportPlayer>
+                    Id = instanceId,
+                    ActivityId = canonicalId,
+                    Date = activityReport.period,
+                    NeedsFullCheck = activityReport.values["playerCount"].basic.value != 1,
+                    Players = new List<ActivityReportPlayer>
+                        {
+                            new ActivityReportPlayer
                             {
-                                new ActivityReportPlayer
-                                {
-                                    PlayerId = player.Id,
-                                    ActivityReportId = instanceId,
-                                    SessionId = reportsBag.Count(ar => ar.Id == instanceId && ar.Players.Any(arp => arp.PlayerId == player.Id)) + 1,
-                                    Score = (int)activityReport.values["score"].basic.value,
-                                    ActivityId = canonicalId,
-                                    Duration = TimeSpan.FromSeconds(activityReport.values["activityDurationSeconds"].basic.value),
-                                    Completed = activityReport.values["completed"].basic.value == 1 && activityReport.values["completionReason"].basic.value != 2.0,
-                                }
+                                PlayerId = player.Id,
+                                ActivityReportId = instanceId,
+                                SessionId = reportsBag.Count(ar => ar.Id == instanceId && ar.Players.Any(arp => arp.PlayerId == player.Id)) + 1,
+                                Score = (int)activityReport.values["score"].basic.value,
+                                ActivityId = canonicalId,
+                                Duration = TimeSpan.FromSeconds(activityReport.values["activityDurationSeconds"].basic.value),
+                                Completed = activityReport.values["completed"].basic.value == 1 && activityReport.values["completionReason"].basic.value != 2.0,
                             }
-                    });
+                        }
+                });
+            });
+            if (response.Response.activities.Last().period < ActivityCutoffUtc)
+                break;
+        }
+        return reportsBag.ToList();
+    }
 
+    private async Task<IReadOnlyDictionary<long, long>> GetActivityHashMap()
+    {
+        var cacheKey = "activityHashMappings";
+        var entries = await _redis.HashGetAllAsync(cacheKey);
+        if (entries.Count() == 0)
+        {
+            await _activityHashMapSemaphore.WaitAsync();
+            try
+            {
+                var groupedActivities = await PullActivitiesFromBungie();
+                if (entries.Count() == 0)
+                {
+                    throw new InvalidOperationException("Activity hash mappings are not populated in Redis.");
                 }
-                if (response.Response.activities.Last().period < ActivityCutoffUtc)
-                    break;
+
+                await _redis.HashSetAsync(cacheKey, groupedActivities.Select(kv => new HashEntry(kv.Key, kv.Value)).ToArray());
+                await _redis.KeyExpireAsync(cacheKey, TimeSpan.FromMinutes(15));
+
+                return groupedActivities;
+            }
+            finally
+            {
+                _activityHashMapSemaphore.Release();
             }
         }
-        catch (DestinyApiException ex) when (ex.ErrorCode == 1665)
+        return entries.ToDictionary(
+            x => long.TryParse(x.Name.ToString(), out var nameHash) ? nameHash : 0,
+            x => long.TryParse(x.Value.ToString(), out var valueHash) ? valueHash : 0
+        );
+    }
+
+    private async Task<IReadOnlyDictionary<long, long>> PullActivitiesFromBungie()
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync();
+        var canonicalActivities = await context.Activities.ToListAsync();
+        var manifest = await _bungieClient.GetManifest();
+        var allActivities = await _bungieClient.GetActivityDefinitions(manifest.Response.jsonWorldComponentContentPaths.en.DestinyActivityDefinition);
+
+        var canonicalNames = canonicalActivities
+            .Select(a => NormalizeActivityName(a.Name))
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var grouped = allActivities.Values
+            .Where(d => canonicalNames.Any(n => n.Contains(NormalizeActivityName(d.displayProperties.name))))
+            .GroupBy(d => NormalizeActivityName(d.displayProperties.name))
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+        var mappings = BuildCanonicalModelsAndMappings(grouped, canonicalActivities);
+
+        return mappings;
+    }
+
+    private static string NormalizeActivityName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return name;
+        var idx = name.IndexOf(": Customize", StringComparison.OrdinalIgnoreCase);
+        if (idx == -1)
+            idx = name.IndexOf(": Matchmade", StringComparison.OrdinalIgnoreCase);
+        return (idx >= 0 ? name[..idx] : name).Trim();
+    }
+
+    private static Dictionary<long, long> BuildCanonicalModelsAndMappings(
+        Dictionary<string, List<DestinyActivityDefinition>> grouped,
+        IReadOnlyCollection<Activity> canonicalActivities)
+    {
+        var mappings = new Dictionary<long, long>();
+
+        foreach (var canonical in canonicalActivities)
         {
-            _logger.LogWarning(ex, "Historical stats throttled for player {PlayerId} character {CharacterId}.", player.Id, characterId);
+            var normalizedName = NormalizeActivityName(canonical.Name);
+
+            if (!string.IsNullOrWhiteSpace(normalizedName) && grouped.TryGetValue(normalizedName, out var variants) && variants.Any())
+            {
+                var canonicalDef = variants.FirstOrDefault(v => v.hash == canonical.Id)
+                    ?? variants.OrderBy(v => v.hash).First();
+
+                mappings[canonical.Id] = canonical.Id;
+
+                foreach (var variant in variants)
+                {
+                    mappings[variant.hash] = canonical.Id;
+                }
+            }
+            else
+            {
+                mappings[canonical.Id] = canonical.Id;
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error fetching activity reports for player: {PlayerId}, character: {CharacterId}", player.Id, characterId);
-            throw;
-        }
+
+        return mappings;
     }
 
     public async Task LoadCrawler()
