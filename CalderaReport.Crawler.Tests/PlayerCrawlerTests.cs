@@ -1,17 +1,7 @@
-using API.Clients.Abstract;
-using Crawler.Services;
-using Domain.Data;
-using Domain.DB;
-using Domain.DestinyApi;
-using Domain.DTO;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
-using StackExchange.Redis;
-using System.Collections.Concurrent;
-using Domain.Enums;
-using Crawler.Tests;
 
 namespace CalderaReport.Crawler.Tests;
 

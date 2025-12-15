@@ -1,9 +1,4 @@
-﻿using API.Models.Responses;
-using Domain.DB;
-using Domain.DTO.Responses;
-using Domain.Enums;
-
-namespace CalderaReport.Functions.Services.Abstract
+﻿namespace CalderaReport.Functions.Services.Abstract
 {
     public interface IQueryService
     {

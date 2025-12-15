@@ -1,5 +1,4 @@
 ﻿using API.Domain.DTO.Responses;
-using API.Models.Responses;
 
 namespace CalderaReport.Domain.DTO.Responses
 {

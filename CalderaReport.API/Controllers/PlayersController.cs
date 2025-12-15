@@ -1,13 +1,9 @@
-﻿using API.Models.Responses;
-using CalderaReport.API.Telemetry;
+﻿using CalderaReport.API.Telemetry;
 using CalderaReport.Domain.DTO.Requests;
 using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Services.Abstract;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Json;
 using Microsoft.AspNetCore.Mvc;
 using System.Diagnostics;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace CalderaReport.API.Controllers;

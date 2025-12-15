@@ -1,9 +1,6 @@
-using System.Globalization;
 using CalderaReport.Crawler.Frontend.Models;
-using Domain.Data;
-using Domain.Enums;
-using Microsoft.EntityFrameworkCore;
 using StackExchange.Redis;
+using System.Globalization;
 
 namespace CalderaReport.Crawler.Frontend.Services;
 

@@ -1,13 +1,6 @@
-﻿using API.Models.Responses;
-using CalderaReport.Functions.Clients.Abstract;
-using CalderaReport.Functions.Services.Abstract;
-using Domain.Data;
-using Domain.DB;
-using Domain.DestinyApi;
-using Domain.Manifest;
+﻿using CalderaReport.Functions.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
 using StackExchange.Redis;
-using System.Collections.Concurrent;
 
 namespace CalderaReport.Functions.Services
 {

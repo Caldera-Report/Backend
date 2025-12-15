@@ -1,4 +1,3 @@
-using Domain.Data;
 using Microsoft.EntityFrameworkCore;
 
 namespace CalderaReport.Crawler.Tests;

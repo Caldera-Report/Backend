@@ -1,7 +1,4 @@
 extern alias APIAssembly;
-using APIAssembly::API.Helpers;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;

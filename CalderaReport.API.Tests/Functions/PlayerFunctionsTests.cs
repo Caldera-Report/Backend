@@ -1,16 +1,4 @@
 extern alias APIAssembly;
-using API.Domain.DTO.Responses;
-using API.Models.Responses;
-using APIAssembly::API.Functions;
-using APIAssembly::API.Services.Abstract;
-using Domain.DB;
-using Domain.DestinyApi;
-using Domain.DTO.Requests;
-using Domain.DTO.Responses;
-using Facet.Extensions;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 using Moq;
 using System.Text.Json;
 using It = Moq.It;

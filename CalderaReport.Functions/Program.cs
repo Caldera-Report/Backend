@@ -1,11 +1,5 @@
-using CalderaReport.Functions.Clients;
-using CalderaReport.Functions.Clients.Abstract;
 using CalderaReport.Functions.Services;
 using CalderaReport.Functions.Services.Abstract;
-using CalderaReport.Functions.Telemetry;
-using Domain.Configuration;
-using Domain.Data;
-using Domain.Serializers;
 using Microsoft.Azure.Functions.Worker.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;

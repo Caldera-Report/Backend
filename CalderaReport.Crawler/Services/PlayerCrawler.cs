@@ -1,89 +1,92 @@
 ﻿using CalderaReport.Domain.Data;
 using CalderaReport.Domain.DB;
+using CalderaReport.Domain.DestinyApi;
 using CalderaReport.Domain.Enums;
 using CalderaReport.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
-using StackExchange.Redis;
-using System.Collections.Concurrent;
 
-namespace CalderaReport.Crawler.Services
+namespace CalderaReport.Crawler.Services;
+
+public class PlayerCrawler : BackgroundService
 {
-    public class PlayerCrawler : BackgroundService
+    private IDbContextFactory<AppDbContext> _contextFactory;
+    private readonly ILogger<PlayerCrawler> _logger;
+    private readonly ICrawlerService _crawlerService;
+    private readonly ILeaderboardService _leaderboardService;
+
+    private const int MaxConcurrentPlayers = 20;
+
+    public PlayerCrawler(
+        ILogger<PlayerCrawler> logger,
+        IDbContextFactory<AppDbContext> contextFactory,
+        ICrawlerService crawlerService,
+        ILeaderboardService leaderboardService)
     {
-        private IDbContextFactory<AppDbContext> _contextFactory;
-        private readonly ILogger<PlayerCrawler> _logger;
-        private readonly ICrawlerService _crawlerService;
+        _logger = logger;
+        _contextFactory = contextFactory;
+        _crawlerService = crawlerService;
+        _leaderboardService = leaderboardService;
+    }
 
-        private const int MaxConcurrentPlayers = 20;
-        private static readonly DateTime ActivityCutoffUtc = new DateTime(2025, 7, 15);
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        _logger.LogInformation("Player crawler started processing queue with {MaxConcurrency} concurrent workers.", MaxConcurrentPlayers);
+        var activeTasks = new List<Task>();
 
-        public PlayerCrawler(
-            ILogger<PlayerCrawler> logger,
-            IDbContextFactory<AppDbContext> contextFactory)
+        try
         {
-            _logger = logger;
-            _contextFactory = contextFactory;
-        }
-
-        protected override async Task ExecuteAsync(CancellationToken ct)
-        {
-            _logger.LogInformation("Player crawler started processing queue with {MaxConcurrency} concurrent workers.", MaxConcurrentPlayers);
-            var activeTasks = new List<Task>();
-
-            try
+            while (!ct.IsCancellationRequested)
             {
-                while (!ct.IsCancellationRequested)
+                while (activeTasks.Count >= MaxConcurrentPlayers)
                 {
-                    while (activeTasks.Count >= MaxConcurrentPlayers)
+                    var completedTask = await Task.WhenAny(activeTasks);
+                    activeTasks.Remove(completedTask);
+                    await completedTask;
+                }
+
+                var playerQueueId = await GetNextPlayerQueueItem(ct);
+                if (playerQueueId == null)
+                {
+                    if (activeTasks.Count == 0)
+                    {
+                        await Task.Delay(1000, ct);
+                    }
+                    else
                     {
                         var completedTask = await Task.WhenAny(activeTasks);
                         activeTasks.Remove(completedTask);
                         await completedTask;
                     }
-
-                    var playerQueueId = await GetNextPlayerQueueItem(ct);
-                    if (playerQueueId == null)
-                    {
-                        if (activeTasks.Count == 0)
-                        {
-                            await Task.Delay(1000, ct);
-                        }
-                        else
-                        {
-                            var completedTask = await Task.WhenAny(activeTasks);
-                            activeTasks.Remove(completedTask);
-                            await completedTask;
-                        }
-                        continue;
-                    }
-
-                    activeTasks.Add(ProcessPlayerAsync(playerQueueId.Value));
+                    continue;
                 }
 
-                await Task.WhenAll(activeTasks);
-                _logger.LogInformation("Player crawler completed.");
+                activeTasks.Add(ProcessPlayer(playerQueueId.Value));
             }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("Player crawler cancellation requested.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unhandled error in player crawler loop.");
-            }
+
+            await Task.WhenAll(activeTasks);
+            _logger.LogInformation("Player crawler completed.");
         }
-
-        private async Task<long?> GetNextPlayerQueueItem(CancellationToken ct)
+        catch (OperationCanceledException)
         {
-            try
-            {
-                await using var context = await _contextFactory.CreateDbContextAsync(ct);
-                var processingStatus = (int)PlayerQueueStatus.Processing;
-                var queuedStatus = (int)PlayerQueueStatus.Queued;
-                var errorStatus = (int)PlayerQueueStatus.Error;
-                var maxAttempts = 3;
+            _logger.LogInformation("Player crawler cancellation requested.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unhandled error in player crawler loop.");
+        }
+    }
 
-                var playerValues = await context.Database.SqlQuery<PlayerCrawlQueue>($@"
+    private async Task<long?> GetNextPlayerQueueItem(CancellationToken ct)
+    {
+        try
+        {
+            await using var context = await _contextFactory.CreateDbContextAsync(ct);
+            var processingStatus = (int)PlayerQueueStatus.Processing;
+            var queuedStatus = (int)PlayerQueueStatus.Queued;
+            var errorStatus = (int)PlayerQueueStatus.Error;
+            var maxAttempts = 3;
+
+            var playerValues = await context.Database.SqlQuery<PlayerCrawlQueue>($@"
                     UPDATE ""PlayerCrawlQueue""
                     SET ""Status"" = {processingStatus}, ""Attempts"" = ""Attempts"" + 1
                     WHERE ""Id"" = (
@@ -96,272 +99,77 @@ namespace CalderaReport.Crawler.Services
                         LIMIT 1
                     )
                     RETURNING *").ToListAsync(ct);
-                var playerValue = playerValues.FirstOrDefault();
+            var playerValue = playerValues.FirstOrDefault();
 
-                return playerValue?.PlayerId ?? null;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error fetching next player queue item.");
-                return null;
-            }
+            return playerValue?.PlayerId ?? null;
         }
-
-        private async Task ProcessPlayerAsync(long playerId)
+        catch (Exception ex)
         {
-            try
-            {
-                await using var context = await _contextFactory.CreateDbContextAsync();
-                var playerValue = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId);
-                if (playerValue is null)
-                {
-                    _logger.LogWarning("Player queue item for PlayerId {PlayerId} not found; skipping.", playerId);
-                    return;
-                }
-                var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerValue.PlayerId);
-                if (player is null)
-                {
-                    _logger.LogWarning("Player {PlayerId} not found in database; skipping work item.", playerValue.Id);
-                    return;
-                }
-
-                // Get characters
-                var charactersToProcess = await _crawlerService.GetCharactersForCrawl(player);
-                // Get last played activity date
-                var lastPlayedActivityDate = await _crawlerService.GetLastPlayedActivityDateForPlayer(player);
-
-                var allReports = new ConcurrentBag<ActivityReport>();
-
-                var characterTasks = charactersToProcess.Select(character => Task.Run(async () =>
-                {
-                    var reports = await _crawlerService.CrawlCharacter(player, character.Key, lastPlayedActivityDate);
-
-                    if (reports is null)
-                    {
-                        return;
-                    }
-
-                    foreach (var report in reports)
-                    {
-                        allReports.Add(report);
-                    }
-                })).ToList();
-
-                await Task.WhenAll(characterTasks);
-
-                if (allReports.IsEmpty)
-                {
-                    player.NeedsFullCheck = false;
-                    playerValue.Status = PlayerQueueStatus.Completed;
-                    playerValue.ProcessedAt = DateTime.UtcNow;
-                    await context.SaveChangesAsync();
-                    _logger.LogInformation("No new activities for player {PlayerId}; marked as completed.", playerValue.PlayerId);
-                }
-                else
-                {
-                    player.LastCrawlStarted = DateTime.UtcNow;
-                    await context.SaveChangesAsync();
-
-                    await CreateActivityReports(allReports, playerId);
-
-                    await using var finalContext = await _contextFactory.CreateDbContextAsync();
-                    var finalPlayerQueueItem = await finalContext.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == playerId);
-                    var finalPlayer = await finalContext.Players.FirstOrDefaultAsync(p => p.Id == playerId);
-
-                    if (finalPlayerQueueItem != null)
-                    {
-                        finalPlayerQueueItem.Status = PlayerQueueStatus.Completed;
-                        finalPlayerQueueItem.ProcessedAt = DateTime.UtcNow;
-                    }
-
-                    await ComputeLeaderboardsForPlayer(playerId, ct);
-
-                    if (finalPlayer != null)
-                    {
-                        finalPlayer.LastCrawlCompleted = DateTime.UtcNow;
-                        finalPlayer.NeedsFullCheck = false;
-                    }
-
-                    await finalContext.SaveChangesAsync(ct);
-
-                    _logger.LogInformation("Created {ReportCount} activity reports for player {PlayerId}.", allReports.Count, playerValue.PlayerId);
-                }
-            }
-            catch (DestinyApiException ex) when (ex.ErrorCode == 1601)
-            {
-                _logger.LogError("Player {PlayerId} does not exist", playerId);
-                try
-                {
-                    await using var context = await _contextFactory.CreateDbContextAsync(ct);
-                    var playerValue = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId, ct);
-                    if (playerValue == null)
-                    {
-                        _logger.LogWarning("Player crawl queue item for PlayerId {PlayerId} not found; cannot remove.", playerId);
-                        return;
-                    }
-                    context.PlayerCrawlQueue.Remove(playerValue);
-                    var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerValue.PlayerId, ct);
-                    if (player != null)
-                    {
-                        context.Players.Remove(player);
-                    }
-                    await context.SaveChangesAsync(ct);
-                }
-                catch (Exception innerEx)
-                {
-                    _logger.LogError(innerEx, "Error removing player {PlayerId}", playerId);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error processing player {PlayerId}.", playerId);
-                try
-                {
-                    await using var context = await _contextFactory.CreateDbContextAsync(ct);
-                    var queueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId, ct);
-                    if (queueItem != null)
-                    {
-                        queueItem.Status = PlayerQueueStatus.Error;
-                        await context.SaveChangesAsync(ct);
-                    }
-                }
-                catch (Exception innerEx)
-                {
-                    _logger.LogError(innerEx, "Error updating player queue status to Error for player {PlayerId}.", playerId);
-                }
-            }
+            _logger.LogError(ex, "Error fetching next player queue item.");
+            return null;
         }
+    }
 
-        
-
-        public async Task GetCharacterActivityReports(Player player, DateTime lastPlayedActivityDate, string characterId, ConcurrentBag<ActivityReport> reportsBag, CancellationToken ct)
+    private async Task ProcessPlayer(long playerId)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync();
+        try
         {
-            
-        }
-
-        private async Task CreateActivityReports(IEnumerable<ActivityReport> activityReports, long playerId, CancellationToken ct)
-        {
-            var reportList = activityReports.ToList();
-            if (reportList.Count == 0)
+            var queueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId);
+            if (queueItem == null)
             {
+                _logger.LogWarning("Player queue item not found for PlayerId: {PlayerId}", playerId);
                 return;
             }
 
-            await using var context = await _contextFactory.CreateDbContextAsync(ct);
+            var addedReports = await _crawlerService.CrawlPlayer(playerId);
 
-            var playerIds = reportList.SelectMany(r => r.Players).Select(p => p.PlayerId).Distinct().ToList();
-
-            foreach (var report in reportList)
+            if (addedReports)
             {
-                while (!await _redis.StringSetAsync($"locks:activities:{report.Id}", report.Id, when: When.NotExists, expiry: TimeSpan.FromSeconds(10)))
+                await _leaderboardService.ComputeLeaderboardsForPlayer(playerId);
+            }
+
+            queueItem.Status = PlayerQueueStatus.Completed;
+            queueItem.ProcessedAt = DateTime.UtcNow;
+            await context.SaveChangesAsync();
+        }
+        catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.PrivateAccount)
+        {
+            _logger.LogWarning("Player {PlayerId} has a private account", playerId);
+            try
+            {
+                var queueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId);
+                if (queueItem != null)
                 {
-                    await Task.Delay(Random.Shared.Next(50, 200));
+                    queueItem.Status = PlayerQueueStatus.Completed;
+                    await context.SaveChangesAsync();
                 }
-                try
-                {
-                    var existing = await context.ActivityReports.Include(ar => ar.Players).FirstOrDefaultAsync(ar => ar.Id == report.Id, ct);
-
-                    if (existing is null)
-                    {
-                        context.ActivityReports.Add(report);
-                    }
-                    else
-                    {
-                        foreach (var incomingPlayerReport in report.Players)
-                        {
-                            var existingPlayerReport = existing.Players.FirstOrDefault(arp => arp.PlayerId == playerId && arp.SessionId == incomingPlayerReport.SessionId);
-
-                            if (existingPlayerReport is null)
-                            {
-                                context.ActivityReportPlayers.Add(incomingPlayerReport);
-                                continue;
-                            }
-
-                            if (IsPlayerReportChanged(existingPlayerReport, incomingPlayerReport))
-                            {
-                                existingPlayerReport.SessionId = incomingPlayerReport.SessionId;
-                                existingPlayerReport.Score = incomingPlayerReport.Score;
-                                existingPlayerReport.Completed = incomingPlayerReport.Completed;
-                                existingPlayerReport.Duration = incomingPlayerReport.Duration;
-                                existingPlayerReport.ActivityId = incomingPlayerReport.ActivityId;
-                            }
-                        }
-
-                        existing.NeedsFullCheck |= report.NeedsFullCheck;
-                    }
-                    await context.SaveChangesAsync(ct);
-                }
-                finally
-                {
-                    await _redis.KeyDeleteAsync($"locks:activities:{report.Id}");
-                }
+                throw;
+            }
+            catch (Exception innerEx)
+            {
+                _logger.LogError(innerEx, "Error updating player queue status to Error for player {PlayerId}.", playerId);
             }
         }
-
-        private async Task ComputeLeaderboardsForPlayer(long playerId, CancellationToken ct)
+        catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.AccountNotFound)
         {
-            await using var context = await _contextFactory.CreateDbContextAsync(ct);
-            var activityReports = await context.ActivityReportPlayers
-                .AsNoTracking()
-                .Where(arp => arp.PlayerId == playerId)
-                .GroupBy(arp => arp.ActivityId)
-                .ToDictionaryAsync(
-                    arpd => arpd.Key,
-                    arpd => arpd.ToList(),
-                    ct);
-            foreach (var activityReport in activityReports)
+            //swallow, it's already handled at the service level
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing player {PlayerId}.", playerId);
+            try
             {
-                foreach (var leaderboardType in Enum.GetValues<LeaderboardTypes>())
+                var queueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId);
+                if (queueItem != null)
                 {
-                    var leaderboardEntry = await context.PlayerLeaderboards.FirstOrDefaultAsync(pl => pl.PlayerId == playerId && pl.ActivityId == activityReport.Key && pl.LeaderboardType == leaderboardType);
-                    if (leaderboardEntry != null)
-                    {
-                        leaderboardEntry.Data = CalculateData(activityReport.Value, leaderboardType);
-                    }
-                    else
-                    {
-                        var newLeaderboardEntry = new PlayerLeaderboard()
-                        {
-                            ActivityId = activityReport.Key,
-                            PlayerId = playerId,
-                            LeaderboardType = leaderboardType,
-                            Data = CalculateData(activityReport.Value, leaderboardType)
-                        };
-                        if (newLeaderboardEntry.Data == 0)
-                        {
-                            continue;
-                        }
-                        context.PlayerLeaderboards.Add(newLeaderboardEntry);
-                    }
+                    queueItem.Status = PlayerQueueStatus.Error;
+                    await context.SaveChangesAsync();
                 }
-                await context.SaveChangesAsync();
             }
-        }
-
-        private static bool IsPlayerReportChanged(ActivityReportPlayer existing, ActivityReportPlayer incoming)
-        {
-            return existing.Score != incoming.Score
-                || existing.SessionId != incoming.SessionId
-                || existing.Completed != incoming.Completed
-                || existing.Duration != incoming.Duration
-                || existing.ActivityId != incoming.ActivityId;
-        }
-
-        private static long CalculateData(List<ActivityReportPlayer> reports, LeaderboardTypes leaderboardType)
-        {
-            if (reports.Count(arp => arp.Completed) == 0)
+            catch (Exception innerEx)
             {
-                return 0;
-            }
-            switch (leaderboardType)
-            {
-                case LeaderboardTypes.TotalCompletions:
-                    return reports.Count(arp => arp.Completed);
-                case LeaderboardTypes.FastestCompletion:
-                    return (long)reports.Where(arp => arp.Completed).Min(arp => arp.Duration).TotalSeconds;
-                case LeaderboardTypes.HighestScore:
-                    return reports.Where((arp) => arp.Completed).Max(arp => arp.Score);
-                default: return 0;
+                _logger.LogError(innerEx, "Error updating player queue status to Error for player {PlayerId}.", playerId);
             }
         }
     }

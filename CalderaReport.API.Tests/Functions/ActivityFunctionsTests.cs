@@ -1,12 +1,4 @@
 extern alias APIAssembly;
-using API.Models.Responses;
-using APIAssembly::API.Functions;
-using APIAssembly::API.Services.Abstract;
-using Domain.DTO.Responses;
-using Domain.Enums;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 using Moq;
 using System.Text.Json;
 

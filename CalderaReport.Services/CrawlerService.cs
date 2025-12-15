@@ -6,7 +6,9 @@ using CalderaReport.Domain.Enums;
 using CalderaReport.Domain.Manifest;
 using CalderaReport.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
+using System;
 using System.Collections.Concurrent;
 
 namespace CalderaReport.Services;
@@ -17,18 +19,120 @@ public class CrawlerService : ICrawlerService
     private readonly IBungieClient _bungieClient;
     private readonly IDatabase _redis;
     private readonly IDbContextFactory<AppDbContext> _contextFactory;
+    private readonly ILogger<CrawlerService> _logger;
 
     private readonly SemaphoreSlim _activityHashMapSemaphore = new SemaphoreSlim(1, 1);
-    private readonly ParallelOptions _parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
+    private readonly ParallelOptions _parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount * 2 };
 
-    public CrawlerService(IDbContextFactory<AppDbContext> contextFactory, IBungieClient bungieClient, IConnectionMultiplexer redis)
+    public CrawlerService(IDbContextFactory<AppDbContext> contextFactory, IBungieClient bungieClient, IConnectionMultiplexer redis, ILogger<CrawlerService> logger)
     {
         _contextFactory = contextFactory;
         _bungieClient = bungieClient;
         _redis = redis.GetDatabase();
+        _logger = logger;
     }
 
-    public async Task<Dictionary<string, DestinyCharacterComponent>> GetCharactersForCrawl(Player player)
+    public async Task<bool> CrawlPlayer(long playerId)
+    {
+        try
+        {
+            await using var context = await _contextFactory.CreateDbContextAsync();
+            var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerId);
+            if (player is null)
+            {
+                _logger.LogWarning("Player {PlayerId} not found in database; skipping work item.", playerId);
+                return false;
+            }
+
+            player.LastCrawlStarted = DateTime.UtcNow;
+            await context.SaveChangesAsync();
+
+            var charactersToProcess = await GetCharactersForCrawl(player);
+            var lastPlayedActivityDate = await GetLastPlayedActivityDateForPlayer(player);
+
+            var allReports = new ConcurrentBag<ActivityReport>();
+
+            await Parallel.ForEachAsync(charactersToProcess, _parallelOptions, async (character, ct) =>
+            {
+                var reports = await CrawlCharacter(player, character.Key, lastPlayedActivityDate);
+                if (reports is null)
+                {
+                    return;
+                }
+                foreach (var report in reports)
+                {
+                    allReports.Add(report);
+                }
+            });
+
+            if (allReports.IsEmpty)
+            {
+                return false;
+            }
+            else
+            {
+                await CreateActivityReports(allReports.ToList(), playerId);
+
+                var finalPlayerQueueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == playerId);
+                var finalPlayer = await context.Players.FirstOrDefaultAsync(p => p.Id == playerId);
+
+                if (finalPlayerQueueItem != null)
+                {
+                    finalPlayerQueueItem.Status = PlayerQueueStatus.Completed;
+                    finalPlayerQueueItem.ProcessedAt = DateTime.UtcNow;
+                }
+
+                if (finalPlayer != null)
+                {
+                    finalPlayer.LastCrawlCompleted = DateTime.UtcNow;
+                    finalPlayer.NeedsFullCheck = false;
+                }
+
+                await context.SaveChangesAsync();
+
+                _logger.LogInformation("Created {ReportCount} activity reports for player {PlayerId}.", allReports.Count, playerId);
+
+                return true;
+            }
+        }
+        catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorStatus, out BungieErrorCodes result) && result == BungieErrorCodes.AccountNotFound)
+        {
+            _logger.LogError("Player {PlayerId} does not exist, deleting", playerId);
+            try
+            {
+                await using var context = await _contextFactory.CreateDbContextAsync();
+                var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerId);
+                if (player != null)
+                {
+                    context.Players.Remove(player);
+                }
+                await context.SaveChangesAsync();
+            }
+            catch (Exception innerEx)
+            {
+                _logger.LogError(innerEx, "Error removing player {PlayerId}", playerId);
+            }
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing player {PlayerId}.", playerId);
+            try
+            {
+                await using var context = await _contextFactory.CreateDbContextAsync();
+                var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerId);
+                player?.NeedsFullCheck = true;
+                await context.SaveChangesAsync();
+            }
+            catch (Exception innerEx)
+            {
+                _logger.LogError(innerEx, "Error updating player queue status to Error for player {PlayerId}.", playerId);
+            }
+            throw;
+        }
+    }
+
+    private async Task<Dictionary<string, DestinyCharacterComponent>> GetCharactersForCrawl(Player player)
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
 
@@ -57,7 +161,8 @@ public class CrawlerService : ICrawlerService
         await using var context = await _contextFactory.CreateDbContextAsync();
 
         var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerId);
-        if (player == null) {
+        if (player == null)
+        {
             throw new InvalidOperationException($"Player with ID {playerId} not found.");
         }
 
@@ -87,7 +192,7 @@ public class CrawlerService : ICrawlerService
         }
     }
 
-    public async Task<DateTime> GetLastPlayedActivityDateForPlayer(Player player)
+    private async Task<DateTime> GetLastPlayedActivityDateForPlayer(Player player)
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
 
@@ -100,7 +205,7 @@ public class CrawlerService : ICrawlerService
         return lastPlayedActivityDate ?? ActivityCutoffUtc;
     }
 
-    public async Task<IEnumerable<ActivityReport>> CrawlCharacter(Player player, string characterId, DateTime lastPlayedActivityDate)
+    private async Task<IEnumerable<ActivityReport>> CrawlCharacter(Player player, string characterId, DateTime lastPlayedActivityDate)
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
 
@@ -256,6 +361,74 @@ public class CrawlerService : ICrawlerService
         return mappings;
     }
 
+    private async Task CreateActivityReports(List<ActivityReport> activityReports, long playerId)
+    {
+        if (activityReports.Count == 0)
+        {
+            return;
+        }
+
+        await using var context = await _contextFactory.CreateDbContextAsync();
+
+        var existingReports = await context.ActivityReports.Include(ar => ar.Players).Where(ear => activityReports.Any(ar => ar.Id == ear.Id)).ToListAsync();
+        await context.DisposeAsync();
+
+        await Parallel.ForEachAsync(activityReports, _parallelOptions, async (report, ct) =>
+        {
+            while (!await _redis.StringSetAsync($"locks:activities:{report.Id}", report.Id, when: When.NotExists, expiry: TimeSpan.FromSeconds(10)))
+            {
+                await Task.Delay(Random.Shared.Next(50, 200));
+            }
+            try
+            {
+                await using var context = await _contextFactory.CreateDbContextAsync();
+                var existing = existingReports.FirstOrDefault(er => er.Id == report.Id);
+                if (existing is null)
+                {
+                    context.ActivityReports.Add(report);
+                }
+                else
+                {
+                    foreach (var incomingPlayerReport in report.Players)
+                    {
+                        var existingPlayerReport = existing.Players.FirstOrDefault(arp => arp.PlayerId == playerId && arp.SessionId == incomingPlayerReport.SessionId);
+
+                        if (existingPlayerReport is null)
+                        {
+                            context.ActivityReportPlayers.Add(incomingPlayerReport);
+                            continue;
+                        }
+
+                        if (IsPlayerReportChanged(existingPlayerReport, incomingPlayerReport))
+                        {
+                            existingPlayerReport.SessionId = incomingPlayerReport.SessionId;
+                            existingPlayerReport.Score = incomingPlayerReport.Score;
+                            existingPlayerReport.Completed = incomingPlayerReport.Completed;
+                            existingPlayerReport.Duration = incomingPlayerReport.Duration;
+                            existingPlayerReport.ActivityId = incomingPlayerReport.ActivityId;
+                        }
+                    }
+
+                    existing.NeedsFullCheck |= report.NeedsFullCheck;
+                }
+                await context.SaveChangesAsync();
+            }
+            finally
+            {
+                await _redis.KeyDeleteAsync($"locks:activities:{report.Id}");
+            }
+        });
+    }
+
+    private static bool IsPlayerReportChanged(ActivityReportPlayer existing, ActivityReportPlayer incoming)
+    {
+        return existing.Score != incoming.Score
+            || existing.SessionId != incoming.SessionId
+            || existing.Completed != incoming.Completed
+            || existing.Duration != incoming.Duration
+            || existing.ActivityId != incoming.ActivityId;
+    }
+
     public async Task LoadCrawler()
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
@@ -278,5 +451,84 @@ public class CrawlerService : ICrawlerService
                     """,
                 (int)PlayerQueueStatus.Queued);
         }
+    }
+
+    public async Task CrawlActivityReport(long reportId)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync();
+
+        var activityReport = await context.ActivityReports.FirstOrDefaultAsync(ar => ar.Id == reportId);
+        if (activityReport == null)
+        {
+            _logger.LogWarning("Activity report {ReportId} not found.", reportId);
+            return;
+        }
+        var pgcr = (await _bungieClient.GetPostGameCarnageReport(reportId)).Response;
+
+        var activityHashMap = await GetActivityHashMap();
+        var activityId = activityHashMap.TryGetValue(pgcr.activityDetails.referenceId, out var mapped) ? mapped : 0;
+
+        if (activityId == 0)
+        {
+            _logger.LogError("Unknown activity ID {activityId} in report {ReportId}", pgcr.activityDetails.referenceId, reportId);
+            context.ActivityReports.Remove(activityReport);
+            await context.SaveChangesAsync();
+            return;
+        }
+
+        var publicEntries = pgcr.entries.Where(e => e.player.destinyUserInfo.isPublic).ToList();
+
+        if (publicEntries.Count > 0)
+        {
+            var playerData = publicEntries
+                .Select(e => new Player
+                {
+                    Id = long.Parse(e.player.destinyUserInfo.membershipId),
+                    MembershipType = e.player.destinyUserInfo.membershipType,
+                    DisplayName = e.player.destinyUserInfo.displayName,
+                    DisplayNameCode = e.player.destinyUserInfo.bungieGlobalDisplayNameCode,
+                })
+                .DistinctBy(p => p.Id)
+                .ToList();
+
+            if (playerData.Count > 0)
+            {
+                var playerIds = playerData.Select(p => p.Id).ToList();
+
+                var existingPlayerIds = await context.Players
+                    .Where(p => playerIds.Contains(p.Id))
+                    .Select(p => p.Id)
+                    .ToListAsync();
+
+                var newPlayerData = playerData.Where(p => !existingPlayerIds.Contains(p.Id)).ToList();
+
+                if (newPlayerData.Count > 0)
+                {
+                    foreach (var player in newPlayerData)
+                    {
+                        while (!await _redis.StringSetAsync($"lock:player:{player.Id}", player.Id, when: When.NotExists, expiry: TimeSpan.FromSeconds(10)))
+                        {
+                            await Task.Delay(Random.Shared.Next(50, 200));
+                        }
+
+                        try
+                        {
+                            if (!await context.Players.AnyAsync(p => p.Id == player.Id))
+                            {
+                                context.Players.Add(player);
+                                context.PlayerCrawlQueue.Add(new PlayerCrawlQueue(player.Id));
+                                await context.SaveChangesAsync();
+                            }
+                        }
+                        finally
+                        {
+                            await _redis.KeyDeleteAsync($"lock:player:{player.Id}");
+                        }
+                    }
+                }
+            }
+        }
+
+        _logger.LogInformation("Processed activity report {ReportId} with {PlayerCount} players.", reportId, publicEntries.Count);
     }
 }

@@ -1,17 +1,7 @@
-﻿using API.Domain.DTO.Responses;
-using API.Models.Responses;
-using CalderaReport.Functions.Services.Abstract;
-using Domain.Data;
-using Domain.DB;
-using Domain.DTO.Responses;
-using Domain.Enums;
-using Facet.Extensions;
-using Facet.Extensions.EFCore;
+﻿using CalderaReport.Functions.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
-using System.Globalization;
-using System.Text.Json;
 
 namespace CalderaReport.Functions.Services
 {
@@ -58,8 +48,8 @@ namespace CalderaReport.Functions.Services
             return lastActivity ?? new DateTime(2025, 7, 15);
         }
 
-        
 
-        
+
+
     }
 }

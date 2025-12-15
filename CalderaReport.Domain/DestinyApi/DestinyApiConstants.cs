@@ -1,34 +1,15 @@
-﻿using CalderaReport.Domain.DB;
-using System.Collections.Generic;
+﻿namespace CalderaReport.Domain.DestinyApi;
 
-namespace CalderaReport.Domain.DestinyApi
+public static class DestinyApiConstants
 {
-    public static class DestinyApiConstants
+    public static ISet<int> NonRetryableErrorCodes { get; } = new HashSet<int>
     {
-        public static ISet<int> NonRetryableErrorCodes { get; } = new HashSet<int>
-        {
-            1601, //Account not found
-            1665 //Private account
-        };
-
-        public static List<OpType> OperationTypes = new List<OpType>
-        {
-            new OpType()
-            {
-                Name = "Solo Ops"
-            },
-            new OpType()
-            {
-                Name = "Fireteam Ops"
-            },
-            new OpType()
-            {
-                Name = "Pinnacle Ops"
-            },
-            new OpType()
-            {
-                Name = "Conquest"
-            }
-        };
-    }
+        (int)BungieErrorCodes.AccountNotFound,
+        (int)BungieErrorCodes.PrivateAccount
+    };
 }
+public enum BungieErrorCodes
+{
+    AccountNotFound = 1601,
+    PrivateAccount = 1665
+};

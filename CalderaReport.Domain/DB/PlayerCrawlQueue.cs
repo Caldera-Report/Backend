@@ -11,6 +11,8 @@ namespace CalderaReport.Domain.DB
         public PlayerQueueStatus Status { get; set; } = PlayerQueueStatus.Queued;
         public int Attempts { get; set; } = 0;
 
+        public Player Player { get; set; }
+
         public PlayerCrawlQueue() { }
         public PlayerCrawlQueue(long id)
         {

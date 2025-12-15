@@ -104,4 +104,61 @@ public class LeaderboardService : ILeaderboardService
             : await query.Where(pl => pl.Data > playerLeaderboard.Data).CountAsync();
         return higherCount + 1;
     }
+
+    public async Task ComputeLeaderboardsForPlayer(long playerId)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync();
+        var activityReports = await context.ActivityReportPlayers
+            .AsNoTracking()
+            .Where(arp => arp.PlayerId == playerId)
+            .GroupBy(arp => arp.ActivityId)
+            .ToDictionaryAsync(
+                arpd => arpd.Key,
+                arpd => arpd.ToList());
+        foreach (var activityReport in activityReports)
+        {
+            foreach (var leaderboardType in Enum.GetValues<LeaderboardTypes>())
+            {
+                var leaderboardEntry = await context.PlayerLeaderboards.FirstOrDefaultAsync(pl => pl.PlayerId == playerId && pl.ActivityId == activityReport.Key && pl.LeaderboardType == leaderboardType);
+                if (leaderboardEntry != null)
+                {
+                    leaderboardEntry.Data = CalculateData(activityReport.Value, leaderboardType);
+                }
+                else
+                {
+                    var newLeaderboardEntry = new PlayerLeaderboard()
+                    {
+                        ActivityId = activityReport.Key,
+                        PlayerId = playerId,
+                        LeaderboardType = leaderboardType,
+                        Data = CalculateData(activityReport.Value, leaderboardType)
+                    };
+                    if (newLeaderboardEntry.Data == 0)
+                    {
+                        continue;
+                    }
+                    context.PlayerLeaderboards.Add(newLeaderboardEntry);
+                }
+            }
+            await context.SaveChangesAsync();
+        }
+    }
+
+    private static long CalculateData(List<ActivityReportPlayer> reports, LeaderboardTypes leaderboardType)
+    {
+        if (reports.Count(arp => arp.Completed) == 0)
+        {
+            return 0;
+        }
+        switch (leaderboardType)
+        {
+            case LeaderboardTypes.TotalCompletions:
+                return reports.Count(arp => arp.Completed);
+            case LeaderboardTypes.FastestCompletion:
+                return (long)reports.Where(arp => arp.Completed).Min(arp => arp.Duration).TotalSeconds;
+            case LeaderboardTypes.HighestScore:
+                return reports.Where((arp) => arp.Completed).Max(arp => arp.Score);
+            default: return 0;
+        }
+    }
 }

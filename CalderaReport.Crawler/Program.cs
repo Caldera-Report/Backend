@@ -1,18 +1,10 @@
-using CalderaReport.Crawler.Clients;
-using CalderaReport.Crawler.Clients.Abstract;
-using CalderaReport.Crawler.Registries;
 using CalderaReport.Crawler.Services;
-using Domain.Configuration;
-using Domain.Data;
-using Domain.DTO;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
 using StackExchange.Redis;
-using System.Collections.Concurrent;
-using System.Threading.Channels;
 
 var builder = Host.CreateApplicationBuilder(args);
 

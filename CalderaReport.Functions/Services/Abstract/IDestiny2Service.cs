@@ -1,8 +1,4 @@
-﻿using API.Models.Responses;
-using Domain.DB;
-using Domain.DestinyApi;
-
-namespace CalderaReport.Functions.Services.Abstract
+﻿namespace CalderaReport.Functions.Services.Abstract
 {
     public interface IDestiny2Service
     {

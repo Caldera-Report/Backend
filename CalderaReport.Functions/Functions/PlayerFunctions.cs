@@ -1,17 +1,14 @@
-using API.Models.Responses;
-using Domain.DTO.Requests;
+using CalderaReport.Functions.Helpers;
+using CalderaReport.Functions.Services.Abstract;
 using Facet.Extensions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FromBodyAttribute = Microsoft.Azure.Functions.Worker.Http.FromBodyAttribute;
-using System.Diagnostics;
-using CalderaReport.Functions.Services.Abstract;
-using CalderaReport.Functions.Telemetry;
-using CalderaReport.Functions.Helpers;
 
 namespace CalderaReport.Functions.Functions;
 

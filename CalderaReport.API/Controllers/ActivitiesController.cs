@@ -40,5 +40,5 @@ public class ActivitiesController : ControllerBase
             activity?.SetTag("error", true);
             activity?.SetTag("error.message", ex.Message);
             return StatusCode(StatusCodes.Status500InternalServerError, "An error occurred while processing your request.");
+        }
     }
-}
