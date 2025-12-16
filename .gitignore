@@ -267,3 +267,6 @@ __pycache__/
 .playwright-mcp
 .env
 /Crawler/appsettings.Development.json
+/CalderaReport.API/appsettings.Development.json
+/CalderaReport.API/appsettings.Development.json
+/CalderaReport.API/appsettings.Development.json
