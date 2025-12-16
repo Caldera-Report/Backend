@@ -1,4 +1,5 @@
 ﻿using CalderaReport.API.Telemetry;
+using CalderaReport.Domain.DestinyApi;
 using CalderaReport.Domain.DTO.Requests;
 using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Services.Abstract;
@@ -14,14 +15,16 @@ public class PlayersController : ControllerBase
 {
     private readonly ILogger<PlayersController> _logger;
     private readonly IPlayerService _playerService;
+    private readonly ICrawlerService _crawlerService;
 
-    public PlayersController(ILogger<PlayersController> logger, IPlayerService playerService)
+    public PlayersController(ILogger<PlayersController> logger, IPlayerService playerService, ICrawlerService crawlerService)
     {
         _logger = logger;
         _playerService = playerService;
+        _crawlerService = crawlerService;
     }
 
-    [HttpGet("/{playerId}")]
+    [HttpGet("{playerId}")]
     public async Task<IActionResult> GetPlayerInfo(long playerId)
     {
         using var activity = APITelemetry.StartActivity("API.GetPlayerInfo");
@@ -43,7 +46,7 @@ public class PlayersController : ControllerBase
             activity?.AddException(ex);
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error retrieving info for player ID {PlayerId}.", playerId);
-            return StatusCode(StatusCodes.Status500InternalServerError, ex);
+            return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
         }
     }
 
@@ -85,11 +88,11 @@ public class PlayersController : ControllerBase
             activity?.AddException(ex);
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error searching for player {PlayerName}.", playerName);
-            return StatusCode(StatusCodes.Status500InternalServerError, ex);
+            return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
         }
     }
 
-    [HttpGet("/{playerId}/stats/{activityId}")]
+    [HttpGet("{playerId}/stats/{activityId}")]
     public async Task<IActionResult> GetPlayerReportsForActivity(long playerId, long activityId)
     {
         using var activity = APITelemetry.StartActivity("API.GetReportsForActivity");
@@ -119,13 +122,34 @@ public class PlayersController : ControllerBase
             activity?.AddException(ex);
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "An error occurred while fetching reports for player: {playerId}, activity: {activityId}", playerId, activityId);
-            return StatusCode(StatusCodes.Status500InternalServerError, ex);
+            return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
         }
     }
 
-    [HttpPost("/{playerId}/load")]
+    [HttpPost("{playerId}/load")]
     public async Task<IActionResult> LoadPlayerActivityReports(long playerId)
     {
-        return StatusCode(StatusCodes.Status501NotImplemented);
+        using var activity = APITelemetry.StartActivity("PlayerFunctions.LoadPlayerActivities");
+        activity?.SetTag("api.function.name", nameof(LoadPlayerActivityReports));
+        activity?.SetTag("api.player.membershipId", playerId);
+        _logger.LogInformation("Activities load requested for player {MembershipId}.", playerId);
+
+        try
+        {
+            await _crawlerService.CrawlPlayer(playerId);
+            return NoContent();
+        }
+        catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.AccountNotFound)
+        {
+            return NotFound($"Player {playerId} does not exist");
+        }
+        catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.PrivateAccount)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, $"Player {playerId} has chosen to keep this information private");
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
+        }
     }
 }

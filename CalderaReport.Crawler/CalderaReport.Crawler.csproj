@@ -22,6 +22,5 @@
   <ItemGroup>
     <ProjectReference Include="..\CalderaReport.Domain\CalderaReport.Domain.csproj" />
     <ProjectReference Include="..\CalderaReport.Services\CalderaReport.Services.csproj" />
-    <ProjectReference Include="..\Domain\CalderaReport.Domain.csproj" />
   </ItemGroup>
 </Project>

@@ -1,4 +1,11 @@
+using CalderaReport.Clients;
+using CalderaReport.Clients.Abstract;
+using CalderaReport.Clients.Registries;
 using CalderaReport.Crawler.Services;
+using CalderaReport.Domain.Configuration;
+using CalderaReport.Domain.Data;
+using CalderaReport.Services;
+using CalderaReport.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using OpenTelemetry.Exporter;
@@ -86,25 +93,24 @@ builder.Services.AddOptions<Destiny2Options>()
     });
 
 builder.Services.AddSingleton<RateLimiterRegistry>();
-builder.Services.AddHttpClient<IDestiny2ApiClient, Destiny2ApiClient>();
+builder.Services.AddHttpClient<IBungieClient, BungieClient>();
+builder.Services.AddScoped<ICrawlerService, CrawlerService>();
+builder.Services.AddScoped<ILeaderboardService, LeaderboardService>();
 builder.Services.AddMemoryCache();
 
 // Background services
 builder.Services.AddHostedService(sp =>
     new PlayerCrawler(
-        sp.GetRequiredService<IDestiny2ApiClient>(),
         sp.GetRequiredService<ILogger<PlayerCrawler>>(),
         sp.GetRequiredService<IDbContextFactory<AppDbContext>>(),
-        sp.GetRequiredService<IMemoryCache>(),
-        sp.GetRequiredService<IConnectionMultiplexer>()));
+        sp.GetRequiredService<ICrawlerService>(),
+        sp.GetRequiredService<ILeaderboardService>()));
 
 builder.Services.AddHostedService(sp =>
     new ActivityReportCrawler(
         sp.GetRequiredService<ILogger<ActivityReportCrawler>>(),
         sp.GetRequiredService<IDbContextFactory<AppDbContext>>(),
-        sp.GetRequiredService<IDestiny2ApiClient>(),
-        sp.GetRequiredService<IMemoryCache>(),
-        sp.GetRequiredService<IConnectionMultiplexer>()));
+        sp.GetRequiredService<ICrawlerService>()));
 
 var host = builder.Build();
 

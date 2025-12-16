@@ -8,7 +8,6 @@ using CalderaReport.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
-using System;
 using System.Collections.Concurrent;
 
 namespace CalderaReport.Services;
@@ -226,20 +225,20 @@ public class CrawlerService : ICrawlerService
                 break;
             page++;
             var activityHashMap = await GetActivityHashMap();
-            Parallel.ForEach(response.Response.activities, _parallelOptions, activityReport =>
+            foreach (var activityReport in response.Response.activities)
             {
                 hasReachedLastUpdate = activityReport.period <= lastPlayedActivityDate;
                 if (activityReport.period < ActivityCutoffUtc || hasReachedLastUpdate)
-                    return;
+                    break;
                 var rawHash = activityReport.activityDetails.referenceId;
                 if (!activityHashMap.TryGetValue(rawHash, out var canonicalId))
-                    return;
+                    continue;
 
                 if (!long.TryParse(activityReport.activityDetails.instanceId, out var instanceId))
-                    return;
+                    continue;
 
                 if (existingReportIds.Contains(instanceId))
-                    return;
+                    continue;
 
                 reportsBag.Add(new ActivityReport
                 {
@@ -261,7 +260,8 @@ public class CrawlerService : ICrawlerService
                             }
                         }
                 });
-            });
+            }
+
             if (response.Response.activities.Last().period < ActivityCutoffUtc)
                 break;
         }
@@ -370,10 +370,9 @@ public class CrawlerService : ICrawlerService
 
         await using var context = await _contextFactory.CreateDbContextAsync();
 
-        var existingReports = await context.ActivityReports.Include(ar => ar.Players).Where(ear => activityReports.Any(ar => ar.Id == ear.Id)).ToListAsync();
-        await context.DisposeAsync();
+        var existingReports = await context.ActivityReports.Include(ar => ar.Players).Where(ear => activityReports.Select(ar => ar.Id).Contains(ear.Id)).ToDictionaryAsync(r => r.Id);
 
-        await Parallel.ForEachAsync(activityReports, _parallelOptions, async (report, ct) =>
+        foreach (var report in activityReports)
         {
             while (!await _redis.StringSetAsync($"locks:activities:{report.Id}", report.Id, when: When.NotExists, expiry: TimeSpan.FromSeconds(10)))
             {
@@ -381,9 +380,7 @@ public class CrawlerService : ICrawlerService
             }
             try
             {
-                await using var context = await _contextFactory.CreateDbContextAsync();
-                var existing = existingReports.FirstOrDefault(er => er.Id == report.Id);
-                if (existing is null)
+                if (existingReports.TryGetValue(report.Id, out var existing) == false)
                 {
                     context.ActivityReports.Add(report);
                 }
@@ -417,7 +414,7 @@ public class CrawlerService : ICrawlerService
             {
                 await _redis.KeyDeleteAsync($"locks:activities:{report.Id}");
             }
-        });
+        }
     }
 
     private static bool IsPlayerReportChanged(ActivityReportPlayer existing, ActivityReportPlayer incoming)

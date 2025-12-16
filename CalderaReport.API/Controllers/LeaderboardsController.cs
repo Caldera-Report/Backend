@@ -23,7 +23,7 @@ public class LeaderboardsController : ControllerBase
         _playerService = playerService;
     }
 
-    [HttpGet("/{leaderboardType}/{activityId}")]
+    [HttpGet("{leaderboardType}/{activityId}")]
     public async Task<IActionResult> GetLeaderboard(int leaderboardType, long activityId, [FromQuery][Required] int count, [FromQuery][Required] int offset)
     {
         using var activity = APITelemetry.StartActivity("API.GetLeaderboard");
@@ -46,7 +46,7 @@ public class LeaderboardsController : ControllerBase
         }
     }
 
-    [HttpPost("/{leaderboardType}/{activityId}")]
+    [HttpPost("{leaderboardType}/{activityId}")]
     public async Task<IActionResult> SearchLeaderboardForPlayer(int leaderboardType, long activityId, [FromBody][Required] SearchRequest request)
     {
         using var activity = APITelemetry.StartActivity("ActivityFunctions.SearchForPlayerLeaderboard");

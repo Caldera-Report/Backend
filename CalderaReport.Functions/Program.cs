@@ -1,4 +1,3 @@
-using CalderaReport.Functions.Services;
 using CalderaReport.Functions.Services.Abstract;
 using Microsoft.Azure.Functions.Worker.Builder;
 using Microsoft.EntityFrameworkCore;
@@ -113,28 +112,7 @@ builder.Services.AddDbContextPool<AppDbContext>(options =>
     options.EnableSensitiveDataLogging(builder.Environment.IsDevelopment());
 }, poolSize: 64);
 
-builder.Services.AddDbContextFactory<AppDbContext>(options =>
-{
-    options.UseNpgsql(builder.Configuration.GetConnectionString("PostgreSqlConnectionString"), npgsqlOptions =>
-    {
-        npgsqlOptions.EnableRetryOnFailure(
-            maxRetryCount: 3,
-            maxRetryDelay: TimeSpan.FromSeconds(30),
-            errorCodesToAdd: null);
-    });
-    options.EnableSensitiveDataLogging(builder.Environment.IsDevelopment());
-});
 
-
-builder.Services.AddOptions<Destiny2Options>()
-    .Configure<IConfiguration>((settings, configuration) =>
-    {
-        configuration.GetSection("Destiny2Api").Bind(settings);
-    });
-
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
-    ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("RedisConnectionString") ?? throw new InvalidOperationException("RedisConnectionString is not configured"))
-);
 
 builder.Services.AddHttpClient<IDestiny2ApiClient, Destiny2ApiClient>();
 builder.Services.AddHttpClient<IManifestClient, ManifestClient>();
