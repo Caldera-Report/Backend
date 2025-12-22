@@ -41,4 +41,4 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH = "$env:PATH;$env:USERPROFILE\.dotnet\tools"
-          dotnet ef database update --project CalderaReport.Domain/CalderaReport.Domain.csproj --startup-project ${{ env.STARTUP_PROJECT_FILE }} --context Domain.Data.AppDbContext
+          dotnet ef database update --project CalderaReport.Domain/CalderaReport.Domain.csproj --startup-project ${{ env.STARTUP_PROJECT_FILE }} --context CalderaReport.Domain.Data.AppDbContext
