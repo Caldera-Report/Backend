@@ -6,7 +6,7 @@ namespace CalderaReport.Services.Abstract;
 
 public interface IPlayerService
 {
-    public Task<Player> GetPlayer(long id);
+    public Task<Player?> GetPlayer(long? id);
     public Task<IEnumerable<Player>> SearchForPlayer(string playerName);
     public Task<IEnumerable<Player>> SearchDbForPlayer(string playerName);
     public Task<Dictionary<string, DestinyCharacterComponent>> GetCharactersForPlayer(long membershipId, int membershipType);

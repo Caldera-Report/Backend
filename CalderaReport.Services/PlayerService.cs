@@ -23,14 +23,12 @@ public class PlayerService : IPlayerService
         _cache = redis.GetDatabase();
     }
 
-    public async Task<Player> GetPlayer(long id)
+    public async Task<Player?> GetPlayer(long? id)
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
         var player = await context.Players
             .FirstOrDefaultAsync(p => p.Id == id);
-        if (player is null)
-            throw new ArgumentException("Player not found");
-        return player;
+        return player ?? null;
     }
 
     public async Task<IEnumerable<Player>> SearchForPlayer(string playerName)

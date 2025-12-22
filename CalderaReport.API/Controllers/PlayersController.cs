@@ -39,7 +39,7 @@ public class PlayersController : ControllerBase
             if (playerInfo == null)
             {
                 _logger.LogWarning("Player with ID {PlayerId} not found.", playerId);
-                return new NotFoundResult();
+                return NotFound($"Player with ID {playerId} does not exist");
             }
             return new OkObjectResult(playerInfo);
         }

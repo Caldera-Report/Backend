@@ -51,8 +51,9 @@ public class CrawlerService : ICrawlerService
             player.LastCrawlStarted = DateTime.UtcNow;
             await context.SaveChangesAsync();
 
-            var charactersToProcess = await GetCharactersForCrawl(player);
             var lastPlayedActivityDate = await GetLastPlayedActivityDateForPlayer(player);
+            var charactersToProcess = await GetCharactersForCrawl(player, lastPlayedActivityDate);
+            
 
             var allReports = new ConcurrentBag<ActivityReport>();
 
@@ -71,6 +72,15 @@ public class CrawlerService : ICrawlerService
 
             if (allReports.IsEmpty)
             {
+                player.LastCrawlCompleted = DateTime.UtcNow;
+                player.NeedsFullCheck = false;
+                var playerQueueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == playerId);
+                if (playerQueueItem != null)
+                {
+                    playerQueueItem.Status = PlayerQueueStatus.Completed;
+                    playerQueueItem.ProcessedAt = DateTime.UtcNow;
+                }
+                await context.SaveChangesAsync();
                 return false;
             }
             else
@@ -136,7 +146,7 @@ public class CrawlerService : ICrawlerService
         }
     }
 
-    private async Task<Dictionary<string, DestinyCharacterComponent>> GetCharactersForCrawl(Player player)
+    private async Task<Dictionary<string, DestinyCharacterComponent>> GetCharactersForCrawl(Player player, DateTime lastPlayedActivityDate)
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
 
@@ -148,7 +158,7 @@ public class CrawlerService : ICrawlerService
         }
         else
         {
-            return characters.Where(c => c.Value.dateLastPlayed > (player.LastCrawlStarted ?? ActivityCutoffUtc)).ToDictionary();
+            return characters.Where(c => c.Value.dateLastPlayed > lastPlayedActivityDate).ToDictionary();
         }
     }
 
@@ -175,7 +185,7 @@ public class CrawlerService : ICrawlerService
         {
             player.DisplayName = profile.profile.data.userInfo.bungieGlobalDisplayName;
             player.DisplayNameCode = profile.profile.data.userInfo.bungieGlobalDisplayNameCode;
-            player.FullDisplayName = player.DisplayName + "#" + player.DisplayNameCode;
+            player.FullDisplayName = $"{profile.profile.data.userInfo.bungieGlobalDisplayName}#{profile.profile.data.userInfo.bungieGlobalDisplayNameCode:0000}";
             context.Players.Update(player);
             await context.SaveChangesAsync();
         }
@@ -206,7 +216,7 @@ public class CrawlerService : ICrawlerService
             .OrderByDescending(r => r.Date)
             .Select(r => (DateTime?)r.Date)
             .FirstOrDefaultAsync();
-        return lastPlayedActivityDate ?? ActivityCutoffUtc;
+        return player.NeedsFullCheck ? ActivityCutoffUtc : lastPlayedActivityDate ?? ActivityCutoffUtc;
     }
 
     private async Task<IEnumerable<ActivityReport>> CrawlCharacter(Player player, string characterId, DateTime lastPlayedActivityDate)
@@ -278,15 +288,15 @@ public class CrawlerService : ICrawlerService
     {
         var cacheKey = "activityHashMappings";
         var entries = await _redis.HashGetAllAsync(cacheKey);
-        if (entries.Count() == 0)
+        if (entries.Length == 0)
         {
             await _activityHashMapSemaphore.WaitAsync();
             try
             {
                 var groupedActivities = await PullActivitiesFromBungie();
-                if (entries.Count() == 0)
+                if (groupedActivities.Count == 0)
                 {
-                    throw new InvalidOperationException("Activity hash mappings are not populated in Redis.");
+                    throw new InvalidOperationException("No Activities pulled from Bungie");
                 }
 
                 await _redis.HashSetAsync(cacheKey, groupedActivities.Select(kv => new HashEntry(kv.Key, kv.Value)).ToArray());

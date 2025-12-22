@@ -8,6 +8,7 @@ using CalderaReport.Domain.Enums;
 using CalderaReport.Services.Abstract;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -60,7 +61,7 @@ public class PlayersControllerTests
 
         var result = await _controller.GetPlayerInfo(playerId);
 
-        result.Should().BeOfType<NotFoundResult>();
+        result.Should().BeOfType<NotFoundObjectResult>();
     }
 
     [Fact]

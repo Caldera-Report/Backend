@@ -65,25 +65,6 @@ public class PlayerServiceTests
     }
 
     [Fact]
-    public async Task GetPlayer_WithInvalidId_ThrowsArgumentException()
-    {
-        var playerId = 999999L;
-
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(databaseName: "TestDb_GetPlayerInvalid")
-            .Options;
-        using var context = new AppDbContext(options);
-
-        _contextFactoryMock.Setup(f => f.CreateDbContextAsync(default))
-            .ReturnsAsync(context);
-
-        var act = async () => await _service.GetPlayer(playerId);
-
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("Player not found");
-    }
-
-    [Fact]
     public async Task SearchForPlayer_WithBungieName_CallsSearchByBungieName()
     {
         var playerName = "TestPlayer#1234";

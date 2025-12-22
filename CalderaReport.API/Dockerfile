@@ -17,7 +17,8 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 # Listen on 8080 by default; override ASPNETCORE_URLS at runtime if needed.
 ENV ASPNETCORE_URLS=http://+:8080 \
-    DOTNET_EnableDiagnostics=0
+    DOTNET_EnableDiagnostics=0 \
+    Cors__AllowedOrigins=
 RUN useradd --create-home --uid 1001 --shell /usr/sbin/nologin apiuser
 COPY --from=publish /app/publish .
 EXPOSE 8080
