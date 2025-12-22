@@ -30,8 +30,7 @@ public class ActivitiesController : ControllerBase
         try
         {
             var ops = await _activityService.GetAllActivities();
-            var activities = ops.ToFacet<OpTypeDto>();
-            return Ok(activities);
+            return Ok(ops);
 
         }
         catch (Exception ex)

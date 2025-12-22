@@ -1,0 +1,44 @@
+name: Apply Database Migrations
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "CalderaReport.Domain/Migrations/**"
+      - ".github/workflows/db-migrations.yml"
+
+env:
+  DOTNET_VERSION: "10.0.x"
+  STARTUP_PROJECT_FILE: "CalderaReport.Domain/CalderaReport.Domain.csproj"
+
+jobs:
+  apply-migrations:
+    runs-on: windows-latest
+    env:
+      ConnectionStrings__PostgreSqlConnectionString: ${{ secrets.DOMAIN_DB_CONNECTION_STRING }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup DotNet ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore './${{ env.STARTUP_PROJECT_FILE }}'
+
+      - name: Install dotnet-ef CLI
+        shell: pwsh
+        run: dotnet tool install --global dotnet-ef --version 10.0.0
+
+      - name: Apply EF Core migrations
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:PATH;$env:USERPROFILE\.dotnet\tools"
+          dotnet ef database update --project CalderaReport.Domain/CalderaReport.Domain.csproj --startup-project ${{ env.STARTUP_PROJECT_FILE }} --context Domain.Data.AppDbContext

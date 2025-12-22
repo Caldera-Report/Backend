@@ -1,0 +1,39 @@
+name: Build and Push API Image
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "CalderaReport.Crawler/**"
+      - "CalderaReport.Services/**"
+      - "CalderaReport.Clients/**"
+      - "CalderaReport.Domain/**"
+      - ".github/workflows/crawler-docker.yml"
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: CalderaReport.API/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            chopstickleg/caldera-report-api:latest
+            chopstickleg/caldera-report-api:${{ github.sha }}

@@ -1,10 +1,9 @@
-﻿namespace CalderaReport.Domain.DB
-{
-    public class OpType
-    {
-        public int Id { get; set; }
-        public string Name { get; set; }
+﻿namespace CalderaReport.Domain.DB;
 
-        public ICollection<Activity> Activities { get; set; }
-    }
+public class OpType
+{
+    public int Id { get; set; }
+    public string Name { get; set; }
+
+    public ICollection<Activity> Activities { get; set; }
 }

@@ -4,6 +4,7 @@ using CalderaReport.Clients.Abstract;
 using CalderaReport.Clients.Registries;
 using CalderaReport.Domain.Configuration;
 using CalderaReport.Domain.Data;
+using CalderaReport.Domain.Serializers;
 using CalderaReport.Services;
 using CalderaReport.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
@@ -37,7 +38,11 @@ if (!string.IsNullOrWhiteSpace(baseEndpoint))
         var serviceName = builder.Environment.ApplicationName ?? assembly.Name ?? "CalderaReport.API";
         var serviceVersion = assembly.Version?.ToString() ?? "unknown";
         resource.AddService(serviceName, serviceVersion, Environment.MachineName)
-            .AddAttributes(new[] { new KeyValuePair<string, object>("deployment.environment", builder.Environment.EnvironmentName) });
+            .AddAttributes(new[]
+            {
+                new KeyValuePair<string, object>("deployment.environment", builder.Environment.EnvironmentName),
+                new KeyValuePair<string, object>("host.name", Environment.MachineName)
+            });
     };
 
     Action<BatchExportProcessorOptions<Activity>> configureBatch = batch =>
@@ -98,7 +103,7 @@ if (!string.IsNullOrWhiteSpace(baseEndpoint))
 
 // Add services to the container.
 
-builder.Services.AddControllers();
+builder.Services.AddControllers().AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new Int64AsStringJsonConverter()));
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
@@ -142,7 +147,7 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
+//app.UseHttpsRedirection();
 
 app.UseAuthorization();
 

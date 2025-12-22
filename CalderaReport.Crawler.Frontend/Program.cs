@@ -1,4 +1,7 @@
+using CalderaReport.Crawler.Frontend.Components;
 using CalderaReport.Crawler.Frontend.Services;
+using CalderaReport.Domain.Data;
+using Microsoft.EntityFrameworkCore;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);

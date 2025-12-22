@@ -1,8 +1,10 @@
-﻿using CalderaReport.API.Telemetry;
+﻿using API.Models.Responses;
+using CalderaReport.API.Telemetry;
 using CalderaReport.Domain.DestinyApi;
 using CalderaReport.Domain.DTO.Requests;
 using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Services.Abstract;
+using Facet.Extensions;
 using Microsoft.AspNetCore.Mvc;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
@@ -81,7 +83,7 @@ public class PlayersController : ControllerBase
             var searchResults = await _playerService.SearchDbForPlayer(playerName);
             if (searchResults.Count() == 0)
                 searchResults = await _playerService.SearchForPlayer(playerName);
-            return Ok(searchResults);
+            return Ok(searchResults.Select(p => p.ToFacet<PlayerSearchDto>()));
         }
         catch (Exception ex)
         {

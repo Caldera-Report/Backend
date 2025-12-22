@@ -38,6 +38,9 @@ public class LeaderboardService : ILeaderboardService
             .Take(count)
             .ToListAsync();
 
+        var conquests = await context.Activities.Where(a => a.OpTypeId == (int)OpTypeEnum.Conquest)
+            .ToDictionaryAsync(a => a.Id, a => a);
+
         return leaderboard
             .Select((pl, i) => new LeaderboardResponse()
             {

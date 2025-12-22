@@ -1,4 +1,7 @@
 using CalderaReport.Crawler.Frontend.Models;
+using CalderaReport.Domain.Data;
+using CalderaReport.Domain.Enums;
+using Microsoft.EntityFrameworkCore;
 using StackExchange.Redis;
 using System.Globalization;
 

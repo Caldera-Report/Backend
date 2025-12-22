@@ -1,3 +1,7 @@
+using CalderaReport.Domain.Data;
+using CalderaReport.Domain.Enums;
+using Microsoft.EntityFrameworkCore;
+
 namespace CalderaReport.Crawler.Frontend.Services;
 
 public class CrawlerTriggerService : ICrawlerTriggerService

@@ -9,7 +9,6 @@ on:
       - "Crawler.Frontend/**"
       - "Domain/**"
       - ".github/workflows/crawler-docker.yml"
-  workflow_dispatch:
 
 jobs:
   build-and-push:

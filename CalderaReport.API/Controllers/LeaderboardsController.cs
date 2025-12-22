@@ -32,7 +32,7 @@ public class LeaderboardsController : ControllerBase
         activity?.SetTag("api.leaderboard.type", leaderboardType);
         try
         {
-            if (!Enum.TryParse(leaderboardType.ToString(), out LeaderboardTypes type))
+            if (!Enum.TryParse(leaderboardType.ToString(), out LeaderboardTypes type) || !Enum.IsDefined(type))
                 return new BadRequestResult();
             var leaderboard = await _leaderboardService.GetLeaderboard(activityId, type, count, offset);
             return Ok(leaderboard);
@@ -46,7 +46,7 @@ public class LeaderboardsController : ControllerBase
         }
     }
 
-    [HttpPost("{leaderboardType}/{activityId}")]
+    [HttpPost("{leaderboardType}/{activityId}/search")]
     public async Task<IActionResult> SearchLeaderboardForPlayer(int leaderboardType, long activityId, [FromBody][Required] SearchRequest request)
     {
         using var activity = APITelemetry.StartActivity("ActivityFunctions.SearchForPlayerLeaderboard");
@@ -55,7 +55,7 @@ public class LeaderboardsController : ControllerBase
         activity?.SetTag("api.leaderboard.type", leaderboardType);
         try
         {
-            if (!Enum.TryParse(leaderboardType.ToString(), out LeaderboardTypes type))
+            if (!Enum.TryParse(leaderboardType.ToString(), out LeaderboardTypes type) || !Enum.IsDefined(type))
                 return new BadRequestResult();
 
             var players = await _playerService.SearchDbForPlayer(request.playerName);

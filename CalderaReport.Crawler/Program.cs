@@ -1,13 +1,12 @@
 using CalderaReport.Clients;
 using CalderaReport.Clients.Abstract;
 using CalderaReport.Clients.Registries;
-using CalderaReport.Crawler.Services;
+using CalderaReport.Crawler.BackgroundServices;
 using CalderaReport.Domain.Configuration;
 using CalderaReport.Domain.Data;
 using CalderaReport.Services;
 using CalderaReport.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
@@ -48,6 +47,7 @@ void ConfigureOpenTelemetryLogs(HostApplicationBuilder b)
             .AddAttributes(new[]
             {
                 new KeyValuePair<string, object>("deployment.environment", b.Environment.EnvironmentName),
+                new KeyValuePair<string, object>("host.name", Environment.MachineName)
             }));
 
         options.AddOtlpExporter(opts =>
@@ -94,8 +94,8 @@ builder.Services.AddOptions<Destiny2Options>()
 
 builder.Services.AddSingleton<RateLimiterRegistry>();
 builder.Services.AddHttpClient<IBungieClient, BungieClient>();
-builder.Services.AddScoped<ICrawlerService, CrawlerService>();
-builder.Services.AddScoped<ILeaderboardService, LeaderboardService>();
+builder.Services.AddSingleton<ICrawlerService, CrawlerService>();
+builder.Services.AddSingleton<ILeaderboardService, LeaderboardService>();
 builder.Services.AddMemoryCache();
 
 // Background services

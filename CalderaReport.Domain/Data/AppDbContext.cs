@@ -16,6 +16,8 @@ namespace CalderaReport.Domain.Data
         public DbSet<ActivityReportPlayer> ActivityReportPlayers { get; set; }
         public DbSet<PlayerCrawlQueue> PlayerCrawlQueue { get; set; }
         public DbSet<PlayerLeaderboard> PlayerLeaderboards { get; set; }
+        public DbSet<ConquestMapping> ConquestMappings { get; set; }
+        public DbSet<Expansion> Expansions { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -55,10 +57,7 @@ namespace CalderaReport.Domain.Data
             {
                 entity.HasKey(pl => new { pl.PlayerId, pl.ActivityId, pl.LeaderboardType });
 
-                var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
-
                 entity.HasIndex(pl => new { pl.ActivityId, pl.LeaderboardType, pl.Data });
-
             });
 
             modelBuilder.Entity<PlayerCrawlQueue>()

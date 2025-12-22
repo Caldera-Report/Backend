@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
+using System.Text.Json;
 
 namespace CalderaReport.Services;
 
@@ -20,7 +21,11 @@ public class CrawlerService : ICrawlerService
     private readonly IDbContextFactory<AppDbContext> _contextFactory;
     private readonly ILogger<CrawlerService> _logger;
 
+    private const string ConquestCacheKey = "conquests:mappings";
+    private static readonly JsonSerializerOptions CacheSerializerOptions = new(JsonSerializerDefaults.Web);
+
     private readonly SemaphoreSlim _activityHashMapSemaphore = new SemaphoreSlim(1, 1);
+    private readonly SemaphoreSlim _conquestCacheSemaphore = new SemaphoreSlim(1, 1);
     private readonly ParallelOptions _parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount * 2 };
 
     public CrawlerService(IDbContextFactory<AppDbContext> contextFactory, IBungieClient bungieClient, IConnectionMultiplexer redis, ILogger<CrawlerService> logger)
@@ -53,7 +58,7 @@ public class CrawlerService : ICrawlerService
 
             await Parallel.ForEachAsync(charactersToProcess, _parallelOptions, async (character, ct) =>
             {
-                var reports = await CrawlCharacter(player, character.Key, lastPlayedActivityDate);
+                var reports = await CrawlCharacter(player, character.Key, player.NeedsFullCheck ? ActivityCutoffUtc : lastPlayedActivityDate);
                 if (reports is null)
                 {
                     return;
@@ -94,7 +99,7 @@ public class CrawlerService : ICrawlerService
                 return true;
             }
         }
-        catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorStatus, out BungieErrorCodes result) && result == BungieErrorCodes.AccountNotFound)
+        catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.AccountNotFound)
         {
             _logger.LogError("Player {PlayerId} does not exist, deleting", playerId);
             try
@@ -244,6 +249,7 @@ public class CrawlerService : ICrawlerService
                 {
                     Id = instanceId,
                     ActivityId = canonicalId,
+                    BungieActivityId = rawHash,
                     Date = activityReport.period,
                     NeedsFullCheck = activityReport.values["playerCount"].basic.value != 1,
                     Players = new List<ActivityReportPlayer>
@@ -321,6 +327,87 @@ public class CrawlerService : ICrawlerService
         return mappings;
     }
 
+    private async Task<IReadOnlyDictionary<long, List<CachedConquest>>> GetConquestLookupAsync()
+    {
+        var cached = await _redis.StringGetAsync(ConquestCacheKey);
+        if (cached.HasValue && !cached.IsNullOrEmpty)
+        {
+            var deserialized = JsonSerializer.Deserialize<Dictionary<long, List<CachedConquest>>>(cached!.ToString(), CacheSerializerOptions);
+            if (deserialized != null)
+            {
+                return deserialized;
+            }
+        }
+
+        await _conquestCacheSemaphore.WaitAsync();
+        try
+        {
+            cached = await _redis.StringGetAsync(ConquestCacheKey);
+            if (cached.HasValue && !cached.IsNullOrEmpty)
+            {
+                var deserialized = JsonSerializer.Deserialize<Dictionary<long, List<CachedConquest>>>(cached!.ToString(), CacheSerializerOptions);
+                if (deserialized != null)
+                {
+                    return deserialized;
+                }
+            }
+
+            await using var context = await _contextFactory.CreateDbContextAsync();
+            var conquestData = await context.ConquestMappings
+                .Include(cm => cm.Expansion)
+                .Select(cm => new CachedConquest
+                {
+                    ActivityId = cm.ActivityId,
+                    BungieActivityId = cm.BungieActivityId,
+                    ReleaseDate = cm.Expansion.ReleaseDate,
+                    EndDate = cm.Expansion.EndDate == default ? null : cm.Expansion.EndDate
+                })
+                .ToListAsync();
+
+            var grouped = conquestData
+                .GroupBy(c => c.BungieActivityId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderBy(c => c.ReleaseDate).ToList());
+
+            await _redis.StringSetAsync(
+                ConquestCacheKey,
+                JsonSerializer.Serialize(grouped, CacheSerializerOptions),
+                TimeSpan.FromMinutes(15));
+
+            return grouped;
+        }
+        finally
+        {
+            _conquestCacheSemaphore.Release();
+        }
+    }
+
+    private static long? ResolveConquestActivityId(
+        long bungieActivityId,
+        DateTime activityDateUtc,
+        IReadOnlyDictionary<long, List<CachedConquest>> conquestLookup)
+    {
+        if (bungieActivityId == 0 || !conquestLookup.TryGetValue(bungieActivityId, out var conquestOptions) || conquestOptions.Count == 0)
+        {
+            return null;
+        }
+
+        var applicable = conquestOptions.FirstOrDefault(c =>
+            activityDateUtc >= c.ReleaseDate &&
+            activityDateUtc <= (c.EndDate ?? DateTime.MaxValue));
+
+        return (applicable ?? conquestOptions.First()).ActivityId;
+    }
+
+    private sealed class CachedConquest
+    {
+        public long ActivityId { get; init; }
+        public long BungieActivityId { get; init; }
+        public DateTime ReleaseDate { get; init; }
+        public DateTime? EndDate { get; init; }
+    }
+
     private static string NormalizeActivityName(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return name;
@@ -370,7 +457,12 @@ public class CrawlerService : ICrawlerService
 
         await using var context = await _contextFactory.CreateDbContextAsync();
 
+        var conquestLookup = await GetConquestLookupAsync();
+
         var existingReports = await context.ActivityReports.Include(ar => ar.Players).Where(ear => activityReports.Select(ar => ar.Id).Contains(ear.Id)).ToDictionaryAsync(r => r.Id);
+
+        List<ActivityReport> reportsToAdd = new();
+        List<ActivityReportPlayer> playerReportsToAdd = new();
 
         foreach (var report in activityReports)
         {
@@ -380,9 +472,19 @@ public class CrawlerService : ICrawlerService
             }
             try
             {
+                var conquestActivityId = ResolveConquestActivityId(report.BungieActivityId, report.Date, conquestLookup);
+                if (conquestActivityId.HasValue)
+                {
+                    report.ActivityId = conquestActivityId.Value;
+                    foreach (var playerReport in report.Players)
+                    {
+                        playerReport.ActivityId = conquestActivityId.Value;
+                    }
+                }
+
                 if (existingReports.TryGetValue(report.Id, out var existing) == false)
                 {
-                    context.ActivityReports.Add(report);
+                    reportsToAdd.Add(report);
                 }
                 else
                 {
@@ -392,7 +494,7 @@ public class CrawlerService : ICrawlerService
 
                         if (existingPlayerReport is null)
                         {
-                            context.ActivityReportPlayers.Add(incomingPlayerReport);
+                            playerReportsToAdd.Add(incomingPlayerReport);
                             continue;
                         }
 
@@ -408,13 +510,36 @@ public class CrawlerService : ICrawlerService
 
                     existing.NeedsFullCheck |= report.NeedsFullCheck;
                 }
-                await context.SaveChangesAsync();
+                if (reportsToAdd.Count >= 100 || playerReportsToAdd.Count >= 200)
+                {
+                    if (reportsToAdd.Count > 0)
+                    {
+                        await context.ActivityReports.AddRangeAsync(reportsToAdd);
+                        reportsToAdd.Clear();
+                    }
+                    if (playerReportsToAdd.Count > 0)
+                    {
+                        await context.ActivityReportPlayers.AddRangeAsync(playerReportsToAdd);
+                        playerReportsToAdd.Clear();
+                    }
+                    await context.SaveChangesAsync();
+                }
             }
             finally
             {
                 await _redis.KeyDeleteAsync($"locks:activities:{report.Id}");
             }
         }
+
+        if (reportsToAdd.Count > 0)
+        {
+            await context.ActivityReports.AddRangeAsync(reportsToAdd);
+        }
+        if (playerReportsToAdd.Count > 0)
+        {
+            await context.ActivityReportPlayers.AddRangeAsync(playerReportsToAdd);
+        }
+        await context.SaveChangesAsync();
     }
 
     private static bool IsPlayerReportChanged(ActivityReportPlayer existing, ActivityReportPlayer incoming)
@@ -473,6 +598,15 @@ public class CrawlerService : ICrawlerService
             return;
         }
 
+        var conquestLookup = await GetConquestLookupAsync();
+        var conquestActivityId = ResolveConquestActivityId(pgcr.activityDetails.referenceId, activityReport.Date, conquestLookup);
+        if (conquestActivityId.HasValue)
+        {
+            activityId = conquestActivityId.Value;
+        }
+
+        activityReport.ActivityId = activityId;
+
         var publicEntries = pgcr.entries.Where(e => e.player.destinyUserInfo.isPublic).ToList();
 
         if (publicEntries.Count > 0)
@@ -524,6 +658,11 @@ public class CrawlerService : ICrawlerService
                     }
                 }
             }
+        }
+
+        if (context.ChangeTracker.HasChanges())
+        {
+            await context.SaveChangesAsync();
         }
 
         _logger.LogInformation("Processed activity report {ReportId} with {PlayerCount} players.", reportId, publicEntries.Count);

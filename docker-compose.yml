@@ -2,7 +2,7 @@ services:
   crawler:
     build:
       context: .
-      dockerfile: Crawler/Dockerfile
+      dockerfile: CalderaReport.Crawler/Dockerfile
       args:
         BUILD_CONFIGURATION: ${BUILD_CONFIGURATION:-Release}
     environment:
@@ -18,7 +18,7 @@ services:
   crawler-frontend:
     build:
       context: .
-      dockerfile: Crawler.Frontend/Dockerfile
+      dockerfile: CalderaReport.Crawler.Frontend/Dockerfile
       args:
         BUILD_CONFIGURATION: ${BUILD_CONFIGURATION:-Release}
     environment:

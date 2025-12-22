@@ -50,8 +50,9 @@ public class PlayerService : IPlayerService
                     MembershipType = uic.membershipType,
                     DisplayName = uic.bungieGlobalDisplayName,
                     DisplayNameCode = uic.bungieGlobalDisplayNameCode,
+                    FullDisplayName = $"{uic.bungieGlobalDisplayName}#{uic.bungieGlobalDisplayNameCode:0000}"
                 })
-                .ToList(); //because apparently sometimes there are dupes
+                .ToList();
 
         await AddSearchResultsToDb(filteredMemberships);
 
@@ -171,6 +172,7 @@ public class PlayerService : IPlayerService
         {
             player.DisplayName = profile.profile.data.userInfo.bungieGlobalDisplayName;
             player.DisplayNameCode = profile.profile.data.userInfo.bungieGlobalDisplayNameCode;
+            player.FullDisplayName = $"{player.DisplayName}#{player.DisplayNameCode:0000}";
             context.Players.Update(player);
             await context.SaveChangesAsync();
         }
