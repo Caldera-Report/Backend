@@ -5,9 +5,9 @@ on:
     branches:
       - master
     paths:
-      - "Crawler/**"
-      - "Crawler.Frontend/**"
-      - "Domain/**"
+      - "CalderaReport.Crawler/**"
+      - "CalderaReport.Crawler.Frontend/**"
+      - "CalderaReport.Domain/**"
       - ".github/workflows/crawler-docker.yml"
 
 jobs:
@@ -30,7 +30,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Crawler/Dockerfile
+          file: CalderaReport.Crawler/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
@@ -41,7 +41,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Crawler.Frontend/Dockerfile
+          file: CalderaReport.Crawler.Frontend/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
