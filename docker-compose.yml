@@ -1,8 +1,28 @@
 services:
+  api:
+    build:
+      context: .
+      dockerfile: CalderaReport.API/Dockerfile
+      args:
+        BUILD_CONFIGURATION: ${BUILD_CONFIGURATION:-Release}
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Production}
+      ASPNETCORE_URLS: ${API_URLS:-http://+:8080}
+      ConnectionStrings__RedisConnectionString: ${REDIS_CONNECTION_STRING:?Set REDIS_CONNECTION_STRING}
+      ConnectionStrings__PostgreSqlConnectionString: ${POSTGRES_CONNECTION_STRING:?Set POSTGRES_CONNECTION_STRING}
+      Destiny2Api__Token: ${DESTINY2_API_TOKEN:?Set DESTINY2_API_TOKEN}
+      Cors__AllowedOrigins: ${CORS_ALLOWED_ORIGINS:-${Cors__AllowedOrigins:-}}
+      OpenTelemetry__Endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OpenTelemetry__TraceSamplingRatio: ${OTEL_TRACE_SAMPLING_RATIO:-0.1}
+    ports:
+      - "${API_PORT:-8080}:8080"
+    restart: unless-stopped
+
   crawler:
     build:
       context: .
-      dockerfile: Crawler/Dockerfile
+      dockerfile: CalderaReport.Crawler/Dockerfile
       args:
         BUILD_CONFIGURATION: ${BUILD_CONFIGURATION:-Release}
     environment:
@@ -18,7 +38,7 @@ services:
   crawler-frontend:
     build:
       context: .
-      dockerfile: Crawler.Frontend/Dockerfile
+      dockerfile: CalderaReport.Crawler.Frontend/Dockerfile
       args:
         BUILD_CONFIGURATION: ${BUILD_CONFIGURATION:-Release}
     environment:
