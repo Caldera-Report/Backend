@@ -39,7 +39,7 @@ public class IntegrationTestBase : IAsyncLifetime
 
         services.AddDbContextFactory<AppDbContext>(options =>
             options.UseNpgsql(_postgresContainer.GetConnectionString()));
-        
+
         services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<AppDbContext>>().CreateDbContext());
 
         _redis = ConnectionMultiplexer.Connect(_redisContainer.GetConnectionString());

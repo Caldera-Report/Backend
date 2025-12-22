@@ -72,7 +72,7 @@ public class ActivityServiceIntegrationTests : IntegrationTestBase
         cachedValue.HasValue.Should().BeTrue("first call should cache the result");
 
         var secondResult = await service.GetAllActivities();
-        
+
         secondResult.Should().NotBeEmpty();
         secondResult.Should().BeEquivalentTo(firstResult);
     }

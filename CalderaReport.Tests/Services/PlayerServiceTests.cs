@@ -87,12 +87,13 @@ public class PlayerServiceTests
         };
 
         _bungieClientMock.Setup(c => c.PerformSearchByBungieName(Moq.It.IsAny<ExactSearchRequest>(), -1))
-            .ReturnsAsync(new DestinyApiResponse<List<UserInfoCard>> { 
-                Response = userInfoCards.ToList(), 
-                ErrorCode = 1, 
-                ErrorStatus = "Success", 
-                Message = "Success", 
-                MessageData = new Dictionary<string, string>() 
+            .ReturnsAsync(new DestinyApiResponse<List<UserInfoCard>>
+            {
+                Response = userInfoCards.ToList(),
+                ErrorCode = 1,
+                ErrorStatus = "Success",
+                Message = "Success",
+                MessageData = new Dictionary<string, string>()
             });
 
         var options = new DbContextOptionsBuilder<AppDbContext>()

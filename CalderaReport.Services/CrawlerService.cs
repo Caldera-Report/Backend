@@ -53,7 +53,7 @@ public class CrawlerService : ICrawlerService
 
             var lastPlayedActivityDate = await GetLastPlayedActivityDateForPlayer(player);
             var charactersToProcess = await GetCharactersForCrawl(player, lastPlayedActivityDate);
-            
+
 
             var allReports = new ConcurrentBag<ActivityReport>();
 
