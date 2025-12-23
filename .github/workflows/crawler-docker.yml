@@ -7,6 +7,8 @@ on:
     paths:
       - "CalderaReport.Crawler/**"
       - "CalderaReport.Crawler.Frontend/**"
+      - "CalderaReport.Services/**"
+      - "CalderaReport.Clients/**"
       - "CalderaReport.Domain/**"
       - ".github/workflows/crawler-docker.yml"
 
