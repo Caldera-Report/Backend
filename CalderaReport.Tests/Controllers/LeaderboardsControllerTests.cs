@@ -88,7 +88,7 @@ public class LeaderboardsControllerTests
         var request = new SearchRequest { playerName = "TestPlayer" };
         var players = new List<Player>
         {
-            new Player { Id = 456L, DisplayName = "TestPlayer", DisplayNameCode = 1234, MembershipType = 3 }
+            new Player { Id = 456L, DisplayName = "TestPlayer", DisplayNameCode = 1234, MembershipType = 3, FullDisplayName = "TestPlayer#1234" }
         };
         var leaderboard = new List<LeaderboardResponse> { new LeaderboardResponse { Rank = 5, Data = "test" } };
 

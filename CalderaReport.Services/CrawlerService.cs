@@ -628,6 +628,7 @@ public class CrawlerService : ICrawlerService
                     MembershipType = e.player.destinyUserInfo.membershipType,
                     DisplayName = e.player.destinyUserInfo.displayName,
                     DisplayNameCode = e.player.destinyUserInfo.bungieGlobalDisplayNameCode,
+                    FullDisplayName = $"{e.player.destinyUserInfo.displayName}#{e.player.destinyUserInfo.bungieGlobalDisplayNameCode:0000}"
                 })
                 .DistinctBy(p => p.Id)
                 .ToList();

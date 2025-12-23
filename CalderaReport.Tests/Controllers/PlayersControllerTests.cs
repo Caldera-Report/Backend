@@ -39,7 +39,8 @@ public class PlayersControllerTests
             Id = playerId,
             DisplayName = "TestPlayer",
             DisplayNameCode = 1234,
-            MembershipType = 3
+            MembershipType = 3,
+            FullDisplayName = "TestPlayer#1234"
         };
 
         _playerServiceMock.Setup(s => s.GetPlayer(playerId))
@@ -84,7 +85,7 @@ public class PlayersControllerTests
         var request = new SearchRequest { playerName = "TestPlayer" };
         var players = new List<Player>
         {
-            new Player { Id = 123L, DisplayName = "TestPlayer", DisplayNameCode = 1234, MembershipType = 3 }
+            new Player { Id = 123L, DisplayName = "TestPlayer", DisplayNameCode = 1234, MembershipType = 3, FullDisplayName = "TestPlayer1234" }
         };
 
         _playerServiceMock.Setup(s => s.SearchDbForPlayer(request.playerName))
@@ -115,7 +116,8 @@ public class PlayersControllerTests
             Id = long.Parse(membershipId),
             DisplayName = "TestPlayer",
             DisplayNameCode = 1234,
-            MembershipType = 3
+            MembershipType = 3,
+            FullDisplayName = "TestPlayer#1234"
         };
 
         _playerServiceMock.Setup(s => s.GetPlayer(long.Parse(membershipId)))
