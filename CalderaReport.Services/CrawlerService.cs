@@ -56,10 +56,15 @@ public class CrawlerService : ICrawlerService
 
 
             var allReports = new ConcurrentBag<ActivityReport>();
+            var sessionCounters = new ConcurrentDictionary<(long ReportId, long PlayerId), int>();
 
             await Parallel.ForEachAsync(charactersToProcess, _parallelOptions, async (character, ct) =>
             {
-                var reports = await CrawlCharacter(player, character.Key, player.NeedsFullCheck ? ActivityCutoffUtc : lastPlayedActivityDate);
+                var reports = await CrawlCharacter(
+                    player,
+                    character.Key,
+                    player.NeedsFullCheck ? ActivityCutoffUtc : lastPlayedActivityDate,
+                    sessionCounters);
                 if (reports is null)
                 {
                     return;
@@ -219,7 +224,11 @@ public class CrawlerService : ICrawlerService
         return player.NeedsFullCheck ? ActivityCutoffUtc : lastPlayedActivityDate ?? ActivityCutoffUtc;
     }
 
-    private async Task<IEnumerable<ActivityReport>> CrawlCharacter(Player player, string characterId, DateTime lastPlayedActivityDate)
+    private async Task<IEnumerable<ActivityReport>> CrawlCharacter(
+        Player player,
+        string characterId,
+        DateTime lastPlayedActivityDate,
+        ConcurrentDictionary<(long ReportId, long PlayerId), int> sessionCounters)
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
 
@@ -268,7 +277,7 @@ public class CrawlerService : ICrawlerService
                             {
                                 PlayerId = player.Id,
                                 ActivityReportId = instanceId,
-                                SessionId = reportsBag.Count(ar => ar.Id == instanceId && ar.Players.Any(arp => arp.PlayerId == player.Id)) + 1,
+                                SessionId = GetNextSessionId(sessionCounters, instanceId, player.Id),
                                 Score = (int)activityReport.values["score"].basic.value,
                                 ActivityId = canonicalId,
                                 Duration = TimeSpan.FromSeconds(activityReport.values["activityDurationSeconds"].basic.value),
@@ -559,6 +568,14 @@ public class CrawlerService : ICrawlerService
             || existing.Completed != incoming.Completed
             || existing.Duration != incoming.Duration
             || existing.ActivityId != incoming.ActivityId;
+    }
+
+    private static int GetNextSessionId(
+        ConcurrentDictionary<(long ReportId, long PlayerId), int> sessionCounters,
+        long reportId,
+        long playerId)
+    {
+        return sessionCounters.AddOrUpdate((reportId, playerId), 1, (_, current) => current + 1);
     }
 
     public async Task LoadCrawler()
