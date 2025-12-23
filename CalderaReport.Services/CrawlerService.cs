@@ -133,6 +133,31 @@ public class CrawlerService : ICrawlerService
             }
             throw;
         }
+        catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.PrivateAccount)
+        {
+            _logger.LogWarning("Player {PlayerId} has a private account", playerId);
+            try
+            {
+                await using var context = await _contextFactory.CreateDbContextAsync();
+                var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerId);
+                if (player != null)
+                {
+                    player.NeedsFullCheck = true;
+                }
+                var playerQueueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == playerId);
+                if (playerQueueItem != null)
+                {
+                    playerQueueItem.Status = PlayerQueueStatus.Completed;
+                    playerQueueItem.ProcessedAt = DateTime.UtcNow;
+                }
+                await context.SaveChangesAsync();
+            }
+            catch (Exception innerEx)
+            {
+                _logger.LogError(innerEx, "Error updating player queue status to Completed for player {PlayerId}.", playerId);
+            }
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing player {PlayerId}.", playerId);
@@ -483,7 +508,27 @@ public class CrawlerService : ICrawlerService
         List<ActivityReport> reportsToAdd = new();
         List<ActivityReportPlayer> playerReportsToAdd = new();
 
-        foreach (var report in activityReports)
+        var mergedReports = activityReports
+            .GroupBy(r => r.Id)
+            .Select(g =>
+            {
+                var baseReport = g.OrderByDescending(r => r.Date).First();
+                baseReport.NeedsFullCheck = g.Any(r => r.NeedsFullCheck);
+                baseReport.ActivityId = g.Select(r => r.ActivityId).FirstOrDefault(id => id != 0);
+                baseReport.BungieActivityId = g.Select(r => r.BungieActivityId).FirstOrDefault(id => id != 0);
+
+                baseReport.Players = g
+                    .SelectMany(r => r.Players)
+                    .GroupBy(p => new { p.PlayerId, p.SessionId })
+                    .Select(pg => pg.First())
+                    .ToList();
+
+                return baseReport;
+            })
+            .ToList();
+
+
+        foreach (var report in mergedReports)
         {
             while (!await _redis.StringSetAsync($"locks:activities:{report.Id}", report.Id, when: When.NotExists, expiry: TimeSpan.FromSeconds(10)))
             {

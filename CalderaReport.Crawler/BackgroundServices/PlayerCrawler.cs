@@ -135,7 +135,6 @@ public class PlayerCrawler : BackgroundService
         }
         catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.PrivateAccount)
         {
-            _logger.LogWarning("Player {PlayerId} has a private account", playerId);
             try
             {
                 var queueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId);
