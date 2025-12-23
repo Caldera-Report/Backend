@@ -8,7 +8,7 @@ public class Player
     public required int MembershipType { get; set; }
     public required string DisplayName { get; set; }
     public required int DisplayNameCode { get; set; }
-    public string FullDisplayName { get; set; } = null!;
+    public required string FullDisplayName { get; set; } = null!;
     public string? LastPlayedCharacterEmblemPath { get; set; }
     public string? LastPlayedCharacterBackgroundPath { get; set; }
     public DateTime? LastCrawlStarted { get; set; }
