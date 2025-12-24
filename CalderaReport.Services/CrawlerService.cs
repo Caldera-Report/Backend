@@ -6,9 +6,12 @@ using CalderaReport.Domain.Enums;
 using CalderaReport.Domain.Manifest;
 using CalderaReport.Services.Abstract;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 
 namespace CalderaReport.Services;
@@ -17,7 +20,7 @@ public class CrawlerService : ICrawlerService
 {
     private static readonly DateTime ActivityCutoffUtc = new DateTime(2025, 7, 15, 19, 0, 0);
     private readonly IBungieClient _bungieClient;
-    private readonly IDatabase _redis;
+    private readonly StackExchange.Redis.IDatabase _redis;
     private readonly IDbContextFactory<AppDbContext> _contextFactory;
     private readonly ILogger<CrawlerService> _logger;
 
@@ -362,7 +365,7 @@ public class CrawlerService : ICrawlerService
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var grouped = allActivities.Values
-            .Where(d => canonicalNames.Any(n => n.Contains(NormalizeActivityName(d.displayProperties.name))))
+            .Where(d => canonicalNames.Any(n => NormalizeActivityName(d.displayProperties.name).Contains(n)))
             .GroupBy(d => NormalizeActivityName(d.displayProperties.name))
             .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
@@ -503,10 +506,9 @@ public class CrawlerService : ICrawlerService
 
         var conquestLookup = await GetConquestLookupAsync();
 
-        var existingReports = await context.ActivityReports.Include(ar => ar.Players).Where(ear => activityReports.Select(ar => ar.Id).Contains(ear.Id)).ToDictionaryAsync(r => r.Id);
-
-        List<ActivityReport> reportsToAdd = new();
-        List<ActivityReportPlayer> playerReportsToAdd = new();
+        List<ActivityReport> reportsToInsert = new();
+        List<ActivityReportPlayer> playerReportsToInsert = new();
+        var reportsNeedingFullCheck = new HashSet<long>();
 
         var mergedReports = activityReports
             .GroupBy(r => r.Id)
@@ -527,83 +529,203 @@ public class CrawlerService : ICrawlerService
             })
             .ToList();
 
+        var reportIds = mergedReports.Select(r => r.Id).Distinct().ToList();
+        var existingReportIds = reportIds.Count == 0
+            ? new HashSet<long>()
+            : await context.ActivityReports
+                .Where(ar => reportIds.Contains(ar.Id))
+                .Select(ar => ar.Id)
+                .ToHashSetAsync();
+
+        var existingPlayerReports = reportIds.Count == 0
+            ? new Dictionary<(long ReportId, int SessionId), ActivityReportPlayer>()
+            : await context.ActivityReportPlayers
+                .Where(arp => arp.PlayerId == playerId && reportIds.Contains(arp.ActivityReportId))
+                .ToDictionaryAsync(
+                    arp => (arp.ActivityReportId, arp.SessionId),
+                    arp => arp);
+
 
         foreach (var report in mergedReports)
         {
-            while (!await _redis.StringSetAsync($"locks:activities:{report.Id}", report.Id, when: When.NotExists, expiry: TimeSpan.FromSeconds(10)))
+            var conquestActivityId = ResolveConquestActivityId(report.BungieActivityId, report.Date, conquestLookup);
+            if (conquestActivityId.HasValue)
             {
-                await Task.Delay(Random.Shared.Next(50, 200));
-            }
-            try
-            {
-                var conquestActivityId = ResolveConquestActivityId(report.BungieActivityId, report.Date, conquestLookup);
-                if (conquestActivityId.HasValue)
+                report.ActivityId = conquestActivityId.Value;
+                foreach (var playerReport in report.Players)
                 {
-                    report.ActivityId = conquestActivityId.Value;
-                    foreach (var playerReport in report.Players)
-                    {
-                        playerReport.ActivityId = conquestActivityId.Value;
-                    }
-                }
-
-                if (existingReports.TryGetValue(report.Id, out var existing) == false)
-                {
-                    reportsToAdd.Add(report);
-                }
-                else
-                {
-                    foreach (var incomingPlayerReport in report.Players)
-                    {
-                        var existingPlayerReport = existing.Players.FirstOrDefault(arp => arp.PlayerId == playerId && arp.SessionId == incomingPlayerReport.SessionId);
-
-                        if (existingPlayerReport is null)
-                        {
-                            playerReportsToAdd.Add(incomingPlayerReport);
-                            continue;
-                        }
-
-                        if (IsPlayerReportChanged(existingPlayerReport, incomingPlayerReport))
-                        {
-                            existingPlayerReport.SessionId = incomingPlayerReport.SessionId;
-                            existingPlayerReport.Score = incomingPlayerReport.Score;
-                            existingPlayerReport.Completed = incomingPlayerReport.Completed;
-                            existingPlayerReport.Duration = incomingPlayerReport.Duration;
-                            existingPlayerReport.ActivityId = incomingPlayerReport.ActivityId;
-                        }
-                    }
-
-                    existing.NeedsFullCheck |= report.NeedsFullCheck;
-                }
-                if (reportsToAdd.Count >= 100 || playerReportsToAdd.Count >= 200)
-                {
-                    if (reportsToAdd.Count > 0)
-                    {
-                        await context.ActivityReports.AddRangeAsync(reportsToAdd);
-                        reportsToAdd.Clear();
-                    }
-                    if (playerReportsToAdd.Count > 0)
-                    {
-                        await context.ActivityReportPlayers.AddRangeAsync(playerReportsToAdd);
-                        playerReportsToAdd.Clear();
-                    }
-                    await context.SaveChangesAsync();
+                    playerReport.ActivityId = conquestActivityId.Value;
                 }
             }
-            finally
+
+            if (existingReportIds.Contains(report.Id) == false)
             {
-                await _redis.KeyDeleteAsync($"locks:activities:{report.Id}");
+                reportsToInsert.Add(report);
+                if (report.Players.Count > 0)
+                {
+                    playerReportsToInsert.AddRange(report.Players);
+                }
+                continue;
+            }
+
+            foreach (var incomingPlayerReport in report.Players)
+            {
+                if (existingPlayerReports.TryGetValue((incomingPlayerReport.ActivityReportId, incomingPlayerReport.SessionId), out var existingPlayerReport) == false)
+                {
+                    playerReportsToInsert.Add(incomingPlayerReport);
+                    continue;
+                }
+
+                if (IsPlayerReportChanged(existingPlayerReport, incomingPlayerReport))
+                {
+                    existingPlayerReport.SessionId = incomingPlayerReport.SessionId;
+                    existingPlayerReport.Score = incomingPlayerReport.Score;
+                    existingPlayerReport.Completed = incomingPlayerReport.Completed;
+                    existingPlayerReport.Duration = incomingPlayerReport.Duration;
+                    existingPlayerReport.ActivityId = incomingPlayerReport.ActivityId;
+                }
+            }
+
+            if (report.NeedsFullCheck)
+            {
+                reportsNeedingFullCheck.Add(report.Id);
             }
         }
 
-        if (reportsToAdd.Count > 0)
+        if (reportsToInsert.Count > 0)
         {
-            await context.ActivityReports.AddRangeAsync(reportsToAdd);
+            await BulkInsertActivityReportsAsync(context, reportsToInsert);
         }
-        if (playerReportsToAdd.Count > 0)
+        if (playerReportsToInsert.Count > 0)
         {
-            await context.ActivityReportPlayers.AddRangeAsync(playerReportsToAdd);
+            await BulkInsertActivityReportPlayersAsync(context, playerReportsToInsert);
+        }
+        if (reportsNeedingFullCheck.Count > 0)
+        {
+            var ids = reportsNeedingFullCheck.ToArray();
+            await context.Database.ExecuteSqlRawAsync(
+                "UPDATE \"ActivityReports\" SET \"NeedsFullCheck\" = TRUE WHERE \"Id\" = ANY ({0})",
+                ids);
         }
         await context.SaveChangesAsync();
+    }
+
+    private static async Task BulkInsertActivityReportsAsync(AppDbContext context, List<ActivityReport> reports)
+    {
+        const int batchSize = 500;
+        for (var i = 0; i < reports.Count; i += batchSize)
+        {
+            var batch = reports.Skip(i).Take(batchSize).ToList();
+            if (batch.Count == 0)
+            {
+                continue;
+            }
+
+            var sql = new StringBuilder();
+            sql.Append("INSERT INTO \"ActivityReports\" (\"Id\", \"Date\", \"ActivityId\", \"NeedsFullCheck\") VALUES ");
+
+            await using var command = new NpgsqlCommand();
+            for (var index = 0; index < batch.Count; index++)
+            {
+                var report = batch[index];
+                if (index > 0)
+                {
+                    sql.Append(", ");
+                }
+
+                var idParam = $"@p{index}_id";
+                var dateParam = $"@p{index}_date";
+                var activityParam = $"@p{index}_activity";
+                var needsFullCheckParam = $"@p{index}_needs";
+
+                sql.Append($"({idParam}, {dateParam}, {activityParam}, {needsFullCheckParam})");
+
+                command.Parameters.AddWithValue(idParam, report.Id);
+                command.Parameters.AddWithValue(dateParam, report.Date);
+                command.Parameters.AddWithValue(activityParam, report.ActivityId);
+                command.Parameters.AddWithValue(needsFullCheckParam, report.NeedsFullCheck);
+            }
+
+            sql.Append(" ON CONFLICT (\"Id\") DO NOTHING;");
+
+            command.CommandText = sql.ToString();
+            var connection = (NpgsqlConnection)context.Database.GetDbConnection();
+            command.Connection = connection;
+            if (connection.State != System.Data.ConnectionState.Open)
+            {
+                await connection.OpenAsync();
+            }
+
+            var transaction = context.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
+            if (transaction != null)
+            {
+                command.Transaction = transaction;
+            }
+
+            await command.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static async Task BulkInsertActivityReportPlayersAsync(AppDbContext context, List<ActivityReportPlayer> players)
+    {
+        const int batchSize = 500;
+        for (var i = 0; i < players.Count; i += batchSize)
+        {
+            var batch = players.Skip(i).Take(batchSize).ToList();
+            if (batch.Count == 0)
+            {
+                continue;
+            }
+
+            var sql = new StringBuilder();
+            sql.Append("INSERT INTO \"ActivityReportPlayers\" (\"PlayerId\", \"SessionId\", \"ActivityReportId\", \"Score\", \"Completed\", \"Duration\", \"ActivityId\") VALUES ");
+
+            await using var command = new NpgsqlCommand();
+            for (var index = 0; index < batch.Count; index++)
+            {
+                var player = batch[index];
+                if (index > 0)
+                {
+                    sql.Append(", ");
+                }
+
+                var playerIdParam = $"@p{index}_player";
+                var sessionIdParam = $"@p{index}_session";
+                var reportIdParam = $"@p{index}_report";
+                var scoreParam = $"@p{index}_score";
+                var completedParam = $"@p{index}_completed";
+                var durationParam = $"@p{index}_duration";
+                var activityParam = $"@p{index}_activity";
+
+                sql.Append($"({playerIdParam}, {sessionIdParam}, {reportIdParam}, {scoreParam}, {completedParam}, {durationParam}, {activityParam})");
+
+                command.Parameters.AddWithValue(playerIdParam, player.PlayerId);
+                command.Parameters.AddWithValue(sessionIdParam, player.SessionId);
+                command.Parameters.AddWithValue(reportIdParam, player.ActivityReportId);
+                command.Parameters.AddWithValue(scoreParam, player.Score);
+                command.Parameters.AddWithValue(completedParam, player.Completed);
+                command.Parameters.AddWithValue(durationParam, player.Duration);
+                command.Parameters.AddWithValue(activityParam, player.ActivityId);
+            }
+
+            sql.Append(" ON CONFLICT (\"ActivityReportId\", \"PlayerId\", \"SessionId\") DO NOTHING;");
+
+            command.CommandText = sql.ToString();
+            var connection = (NpgsqlConnection)context.Database.GetDbConnection();
+            command.Connection = connection;
+            if (connection.State != System.Data.ConnectionState.Open)
+            {
+                await connection.OpenAsync();
+            }
+
+            var transaction = context.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
+            if (transaction != null)
+            {
+                command.Transaction = transaction;
+            }
+
+            await command.ExecuteNonQueryAsync();
+        }
     }
 
     private static bool IsPlayerReportChanged(ActivityReportPlayer existing, ActivityReportPlayer incoming)
