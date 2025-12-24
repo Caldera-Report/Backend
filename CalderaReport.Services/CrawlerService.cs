@@ -26,6 +26,10 @@ public class CrawlerService : ICrawlerService
 
     private const string ConquestCacheKey = "conquests:mappings";
     private static readonly JsonSerializerOptions CacheSerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly IReadOnlyDictionary<string, string> ActivityNameAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        // ["Alias Name"] = "Canonical Name"
+    };
 
     private readonly SemaphoreSlim _activityHashMapSemaphore = new SemaphoreSlim(1, 1);
     private readonly SemaphoreSlim _conquestCacheSemaphore = new SemaphoreSlim(1, 1);
@@ -362,12 +366,34 @@ public class CrawlerService : ICrawlerService
         var canonicalNames = canonicalActivities
             .Select(a => NormalizeActivityName(a.Name))
             .Where(n => !string.IsNullOrWhiteSpace(n))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(n => n, n => n, StringComparer.OrdinalIgnoreCase);
 
-        var grouped = allActivities.Values
-            .Where(d => canonicalNames.Any(n => NormalizeActivityName(d.displayProperties.name).Contains(n)))
-            .GroupBy(d => NormalizeActivityName(d.displayProperties.name))
-            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+        var grouped = new Dictionary<string, List<DestinyActivityDefinition>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var definition in allActivities.Values)
+        {
+            var displayName = definition.displayProperties?.name ?? string.Empty;
+            var normalizedName = NormalizeActivityName(displayName);
+            if (string.IsNullOrWhiteSpace(normalizedName))
+            {
+                continue;
+            }
+
+            var canonicalName = TryResolveCanonicalActivityName(normalizedName, canonicalNames);
+            if (canonicalName is null)
+            {
+                continue;
+            }
+
+            if (!grouped.TryGetValue(canonicalName, out var variants))
+            {
+                variants = new List<DestinyActivityDefinition>();
+                grouped[canonicalName] = variants;
+            }
+
+            variants.Add(definition);
+        }
 
         var mappings = BuildCanonicalModelsAndMappings(grouped, canonicalActivities);
 
@@ -458,10 +484,82 @@ public class CrawlerService : ICrawlerService
     private static string NormalizeActivityName(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return name;
+        name = NormalizeWhitespace(name);
         var idx = name.IndexOf(": Customize", StringComparison.OrdinalIgnoreCase);
         if (idx == -1)
             idx = name.IndexOf(": Matchmade", StringComparison.OrdinalIgnoreCase);
         return (idx >= 0 ? name[..idx] : name).Trim();
+    }
+
+    private static string NormalizeWhitespace(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        var inWhitespace = false;
+
+        foreach (var ch in value)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                if (!inWhitespace)
+                {
+                    builder.Append(' ');
+                    inWhitespace = true;
+                }
+                continue;
+            }
+
+            inWhitespace = false;
+            builder.Append(ch);
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static IEnumerable<string> GetActivityNameMatchCandidates(string normalizedName)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedName))
+        {
+            yield break;
+        }
+
+        yield return normalizedName;
+
+        var lastColon = normalizedName.LastIndexOf(": ", StringComparison.OrdinalIgnoreCase);
+        if (lastColon < 0 || lastColon + 2 >= normalizedName.Length)
+        {
+            yield break;
+        }
+
+        var suffix = normalizedName[(lastColon + 2)..].Trim();
+        if (!string.IsNullOrWhiteSpace(suffix) && !suffix.Equals(normalizedName, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return suffix;
+        }
+    }
+
+    private static string? TryResolveCanonicalActivityName(
+        string normalizedActivityName,
+        IReadOnlyDictionary<string, string> canonicalNames)
+    {
+        foreach (var candidate in GetActivityNameMatchCandidates(normalizedActivityName))
+        {
+            if (canonicalNames.ContainsKey(candidate))
+            {
+                return candidate;
+            }
+
+            if (ActivityNameAliases.TryGetValue(candidate, out var aliasTarget) && canonicalNames.ContainsKey(aliasTarget))
+            {
+                return aliasTarget;
+            }
+        }
+
+        return null;
     }
 
     private static Dictionary<long, long> BuildCanonicalModelsAndMappings(
