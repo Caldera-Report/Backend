@@ -136,6 +136,31 @@ public class CrawlerService : ICrawlerService
             }
             throw;
         }
+        catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.PrivateAccount)
+        {
+            _logger.LogWarning("Player {PlayerId} has a private account", playerId);
+            try
+            {
+                await using var context = await _contextFactory.CreateDbContextAsync();
+                var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerId);
+                if (player != null)
+                {
+                    player.NeedsFullCheck = true;
+                }
+                var playerQueueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(pcq => pcq.PlayerId == playerId);
+                if (playerQueueItem != null)
+                {
+                    playerQueueItem.Status = PlayerQueueStatus.Completed;
+                    playerQueueItem.ProcessedAt = DateTime.UtcNow;
+                }
+                await context.SaveChangesAsync();
+            }
+            catch (Exception innerEx)
+            {
+                _logger.LogError(innerEx, "Error updating player queue status to Completed for player {PlayerId}.", playerId);
+            }
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing player {PlayerId}.", playerId);
@@ -485,6 +510,9 @@ public class CrawlerService : ICrawlerService
         List<ActivityReportPlayer> playerReportsToInsert = new();
         var reportsNeedingFullCheck = new HashSet<long>();
 
+        List<ActivityReport> reportsToAdd = new();
+        List<ActivityReportPlayer> playerReportsToAdd = new();
+
         var mergedReports = activityReports
             .GroupBy(r => r.Id)
             .Select(g =>
@@ -504,21 +532,6 @@ public class CrawlerService : ICrawlerService
             })
             .ToList();
 
-        var reportIds = mergedReports.Select(r => r.Id).Distinct().ToList();
-        var existingReportIds = reportIds.Count == 0
-            ? new HashSet<long>()
-            : await context.ActivityReports
-                .Where(ar => reportIds.Contains(ar.Id))
-                .Select(ar => ar.Id)
-                .ToHashSetAsync();
-
-        var existingPlayerReports = reportIds.Count == 0
-            ? new Dictionary<(long ReportId, int SessionId), ActivityReportPlayer>()
-            : await context.ActivityReportPlayers
-                .Where(arp => arp.PlayerId == playerId && reportIds.Contains(arp.ActivityReportId))
-                .ToDictionaryAsync(
-                    arp => (arp.ActivityReportId, arp.SessionId),
-                    arp => arp);
 
         foreach (var report in mergedReports)
         {
