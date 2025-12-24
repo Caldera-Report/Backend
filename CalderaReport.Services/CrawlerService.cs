@@ -20,7 +20,7 @@ public class CrawlerService : ICrawlerService
 {
     private static readonly DateTime ActivityCutoffUtc = new DateTime(2025, 7, 15, 19, 0, 0);
     private readonly IBungieClient _bungieClient;
-    private readonly IDatabase _redis;
+    private readonly StackExchange.Redis.IDatabase _redis;
     private readonly IDbContextFactory<AppDbContext> _contextFactory;
     private readonly ILogger<CrawlerService> _logger;
 
@@ -510,9 +510,6 @@ public class CrawlerService : ICrawlerService
         List<ActivityReportPlayer> playerReportsToInsert = new();
         var reportsNeedingFullCheck = new HashSet<long>();
 
-        List<ActivityReport> reportsToAdd = new();
-        List<ActivityReportPlayer> playerReportsToAdd = new();
-
         var mergedReports = activityReports
             .GroupBy(r => r.Id)
             .Select(g =>
@@ -531,6 +528,22 @@ public class CrawlerService : ICrawlerService
                 return baseReport;
             })
             .ToList();
+
+        var reportIds = mergedReports.Select(r => r.Id).Distinct().ToList();
+        var existingReportIds = reportIds.Count == 0
+            ? new HashSet<long>()
+            : await context.ActivityReports
+                .Where(ar => reportIds.Contains(ar.Id))
+                .Select(ar => ar.Id)
+                .ToHashSetAsync();
+
+        var existingPlayerReports = reportIds.Count == 0
+            ? new Dictionary<(long ReportId, int SessionId), ActivityReportPlayer>()
+            : await context.ActivityReportPlayers
+                .Where(arp => arp.PlayerId == playerId && reportIds.Contains(arp.ActivityReportId))
+                .ToDictionaryAsync(
+                    arp => (arp.ActivityReportId, arp.SessionId),
+                    arp => arp);
 
 
         foreach (var report in mergedReports)
