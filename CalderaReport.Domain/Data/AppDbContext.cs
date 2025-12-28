@@ -18,6 +18,8 @@ namespace CalderaReport.Domain.Data
         public DbSet<PlayerLeaderboard> PlayerLeaderboards { get; set; }
         public DbSet<ConquestMapping> ConquestMappings { get; set; }
         public DbSet<Expansion> Expansions { get; set; }
+        public DbSet<CallToArmsEvent> CallToArmsEvents { get; set; }
+        public DbSet<CallToArmsActivity> CallToArmsActivities { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -41,16 +43,6 @@ namespace CalderaReport.Domain.Data
                 entity.HasKey(arp => new { arp.ActivityReportId, arp.PlayerId, arp.SessionId });
 
                 entity.HasIndex(arp => arp.PlayerId);
-
-                //Leaderboard indexes
-                entity.HasIndex(arp => new { arp.ActivityId, arp.Completed, arp.Duration })
-                    .HasFilter("\"Completed\" = TRUE");
-
-                entity.HasIndex(arp => new { arp.ActivityId, arp.Score })
-                      .HasFilter("\"Completed\" = TRUE");
-
-                entity.HasIndex(arp => new { arp.ActivityId, arp.PlayerId })
-                      .HasFilter("\"Completed\" = TRUE");
             });
 
             modelBuilder.Entity<PlayerLeaderboard>(entity =>

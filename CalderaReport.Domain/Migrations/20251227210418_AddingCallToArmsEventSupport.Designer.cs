@@ -3,17 +3,20 @@ using System;
 using CalderaReport.Domain.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace Worker.Migrations
+namespace API.Domain.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class WorkerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251227210418_AddingCallToArmsEventSupport")]
+    partial class AddingCallToArmsEventSupport
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -100,6 +103,15 @@ namespace Worker.Migrations
                     b.HasKey("ActivityReportId", "PlayerId", "SessionId");
 
                     b.HasIndex("PlayerId");
+
+                    b.HasIndex("ActivityId", "PlayerId")
+                        .HasFilter("\"Completed\" = TRUE");
+
+                    b.HasIndex("ActivityId", "Score")
+                        .HasFilter("\"Completed\" = TRUE");
+
+                    b.HasIndex("ActivityId", "Completed", "Duration")
+                        .HasFilter("\"Completed\" = TRUE");
 
                     b.ToTable("ActivityReportPlayers");
                 });

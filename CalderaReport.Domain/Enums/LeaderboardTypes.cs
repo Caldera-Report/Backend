@@ -4,6 +4,7 @@
     {
         FastestCompletion,
         TotalCompletions,
-        HighestScore
+        HighestScore,
+        CallToArms
     }
 }

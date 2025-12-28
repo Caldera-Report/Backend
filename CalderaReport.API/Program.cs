@@ -7,6 +7,9 @@ using CalderaReport.Domain.Data;
 using CalderaReport.Domain.Serializers;
 using CalderaReport.Services;
 using CalderaReport.Services.Abstract;
+using Hangfire;
+using Hangfire.Dashboard;
+using Hangfire.PostgreSql;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OpenTelemetry;
@@ -107,6 +110,10 @@ builder.Services.AddControllers().AddJsonOptions(o => o.JsonSerializerOptions.Co
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
+builder.Services.AddHangfire(config => config.UsePostgreSqlStorage(c => c.UseNpgsqlConnection(builder.Configuration.GetConnectionString("PostgreSqlConnectionString"))));
+
+builder.Services.AddHangfireServer();
+
 var corsAllowedOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
     .Get<string[]>() ?? Array.Empty<string>();
@@ -181,6 +188,17 @@ if (app.Environment.IsDevelopment())
 }
 
 //app.UseHttpsRedirection();
+
+
+app.UseHangfireDashboard("/hangfire");
+
+using (var scope = app.Services.CreateScope())
+{
+    RecurringJob.AddOrUpdate<ICrawlerService>(
+        "PlayerCrawlerJob",
+        s => s.LoadCrawler(),
+        Cron.Daily);
+}
 
 app.UseCors("DefaultCors");
 app.UseAuthorization();

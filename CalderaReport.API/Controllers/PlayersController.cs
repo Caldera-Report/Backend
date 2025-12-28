@@ -5,6 +5,7 @@ using CalderaReport.Domain.DTO.Requests;
 using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Services.Abstract;
 using Facet.Extensions;
+using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
@@ -138,7 +139,17 @@ public class PlayersController : ControllerBase
 
         try
         {
-            await _crawlerService.CrawlPlayer(playerId);
+            var addedReports = await _crawlerService.CrawlPlayer(playerId);
+
+            try
+            {
+                BackgroundJob.Enqueue<ILeaderboardService>(s => s.CheckAndComputeLeaderboards(playerId, addedReports));
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("JobStorage", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(ex, "Hangfire is not configured; skipping leaderboard job enqueue for player {PlayerId}.", playerId);
+            }
+            
             return NoContent();
         }
         catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.AccountNotFound)
