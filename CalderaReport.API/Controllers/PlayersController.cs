@@ -149,7 +149,7 @@ public class PlayersController : ControllerBase
             {
                 _logger.LogWarning(ex, "Hangfire is not configured; skipping leaderboard job enqueue for player {PlayerId}.", playerId);
             }
-            
+
             return NoContent();
         }
         catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.AccountNotFound)

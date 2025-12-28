@@ -3,7 +3,7 @@ using Facet;
 
 namespace CalderaReport.Domain.DTO.Responses;
 
-[Facet (typeof(CallToArmsEvent), NestedFacets = [typeof(CallToArmsActivityDto)])]
+[Facet(typeof(CallToArmsEvent), NestedFacets = [typeof(CallToArmsActivityDto)])]
 public partial class CallToArmsEventDto
 {
 }

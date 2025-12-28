@@ -190,7 +190,7 @@ public class LeaderboardService : ILeaderboardService
         {
             return true;
         }
-        
+
 
         var hasLeaderboardEntries = await context.PlayerLeaderboards
             .AnyAsync(pl => pl.PlayerId == player.Id && pl.LeaderboardType == LeaderboardTypes.CallToArms);
@@ -309,7 +309,7 @@ public class LeaderboardService : ILeaderboardService
         }
         else
         {
-            return result.Select(r => JsonSerializer.Deserialize<CallToArmsEventDto>(r.ToString()) 
+            return result.Select(r => JsonSerializer.Deserialize<CallToArmsEventDto>(r.ToString())
             ?? throw new InvalidDataException("Unable to deserialize call to arms data")).ToList();
         }
     }
@@ -317,7 +317,7 @@ public class LeaderboardService : ILeaderboardService
     public async Task CheckAndComputeLeaderboards(long playerId, bool addedActivities)
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
-        var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerId) 
+        var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerId)
             ?? throw new InvalidDataException($"Player {playerId} does not exist");
 
         if (!addedActivities && !player.NeedsFullCheck)
