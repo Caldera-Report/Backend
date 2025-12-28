@@ -1,4 +1,5 @@
-﻿using CalderaReport.Domain.DTO.Responses;
+﻿using CalderaReport.Domain.DB;
+using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Domain.Enums;
 
 namespace CalderaReport.Services.Abstract;
@@ -7,5 +8,8 @@ public interface ILeaderboardService
 {
     public Task<IEnumerable<LeaderboardResponse>> GetLeaderboard(long activityId, LeaderboardTypes type, int count, int offset);
     public Task<IEnumerable<LeaderboardResponse>> GetLeaderboardsForPlayer(List<long> playerIds, long activityId, LeaderboardTypes type);
-    public Task ComputeLeaderboardsForPlayer(long playerId);
+    public Task ComputeLeaderboardsForPlayer(Player player);
+    public Task<bool> ShouldComputeCallToArmsLeaderboards(Player player);
+    public Task ComputeCallToArmsLeaderboards(Player player);
+    public Task CheckAndComputeLeaderboards(long playerId, bool addedActivities);
 }

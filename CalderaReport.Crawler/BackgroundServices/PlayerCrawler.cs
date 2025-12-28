@@ -124,9 +124,15 @@ public class PlayerCrawler : BackgroundService
 
             var addedReports = await _crawlerService.CrawlPlayer(playerId);
 
-            if (addedReports)
+            var player = await context.Players.AsNoTracking().FirstOrDefaultAsync(p => p.Id == playerId) ?? throw new InvalidDataException($"Idk how we got here, but no player exists with id {playerId}");
+
+            if (addedReports || player.NeedsFullCheck)
             {
-                await _leaderboardService.ComputeLeaderboardsForPlayer(playerId);
+                await _leaderboardService.ComputeLeaderboardsForPlayer(player);
+                if (await _leaderboardService.ShouldComputeCallToArmsLeaderboards(player))
+                {
+                    await _leaderboardService.ComputeCallToArmsLeaderboards(player);
+                }
             }
 
             queueItem.Status = PlayerQueueStatus.Completed;

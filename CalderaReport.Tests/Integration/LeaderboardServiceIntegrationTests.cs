@@ -50,7 +50,7 @@ public class LeaderboardServiceIntegrationTests : IntegrationTestBase
         _dbContext.PlayerLeaderboards.AddRange(leaderboards);
         await _dbContext.SaveChangesAsync();
 
-        var service = new LeaderboardService(_contextFactory);
+        var service = new LeaderboardService(_contextFactory, _redis);
 
         var result = await service.GetLeaderboard(100, LeaderboardTypes.FastestCompletion, 10, 0);
 
@@ -97,7 +97,7 @@ public class LeaderboardServiceIntegrationTests : IntegrationTestBase
         _dbContext.PlayerLeaderboards.AddRange(leaderboards);
         await _dbContext.SaveChangesAsync();
 
-        var service = new LeaderboardService(_contextFactory);
+        var service = new LeaderboardService(_contextFactory, _redis);
 
         var result = await service.GetLeaderboard(200, LeaderboardTypes.HighestScore, 5, 5);
 
@@ -153,13 +153,14 @@ public class LeaderboardServiceIntegrationTests : IntegrationTestBase
         _dbContext.PlayerLeaderboards.AddRange(leaderboards);
         await _dbContext.SaveChangesAsync();
 
-        var service = new LeaderboardService(_contextFactory);
+        var service = new LeaderboardService(_contextFactory, _redis);
 
         var result = await service.GetLeaderboardsForPlayer(new List<long> { 3001 }, 300, LeaderboardTypes.FastestCompletion);
 
         result.Should().NotBeEmpty();
         result.Should().HaveCount(1);
         result.First().Player.DisplayName.Should().Be("TargetPlayer");
+        result.First().Rank.Should().Be(1);
     }
 
 }

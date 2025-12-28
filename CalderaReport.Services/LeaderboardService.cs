@@ -4,18 +4,24 @@ using CalderaReport.Domain.DB;
 using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Domain.Enums;
 using CalderaReport.Services.Abstract;
+using Facet.Extensions.EFCore;
 using Microsoft.EntityFrameworkCore;
+using StackExchange.Redis;
 using System.Globalization;
+using System.Text.Json;
 
 namespace CalderaReport.Services;
 
 public class LeaderboardService : ILeaderboardService
 {
     private readonly IDbContextFactory<AppDbContext> _contextFactory;
+    private readonly IDatabase _redis;
+    private readonly SemaphoreSlim _refreshCallToArmsSemaphore = new SemaphoreSlim(1);
 
-    public LeaderboardService(IDbContextFactory<AppDbContext> contextFactory)
+    public LeaderboardService(IDbContextFactory<AppDbContext> contextFactory, IConnectionMultiplexer redis)
     {
         _contextFactory = contextFactory;
+        _redis = redis.GetDatabase();
     }
 
     public async Task<IEnumerable<LeaderboardResponse>> GetLeaderboard(long activityId, LeaderboardTypes type, int count, int offset)
@@ -108,12 +114,12 @@ public class LeaderboardService : ILeaderboardService
         return higherCount + 1;
     }
 
-    public async Task ComputeLeaderboardsForPlayer(long playerId)
+    public async Task ComputeLeaderboardsForPlayer(Player player)
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
         var activityReports = await context.ActivityReportPlayers
             .AsNoTracking()
-            .Where(arp => arp.PlayerId == playerId)
+            .Where(arp => arp.PlayerId == player.Id)
             .GroupBy(arp => arp.ActivityId)
             .ToDictionaryAsync(
                 arpd => arpd.Key,
@@ -122,7 +128,11 @@ public class LeaderboardService : ILeaderboardService
         {
             foreach (var leaderboardType in Enum.GetValues<LeaderboardTypes>())
             {
-                var leaderboardEntry = await context.PlayerLeaderboards.FirstOrDefaultAsync(pl => pl.PlayerId == playerId && pl.ActivityId == activityReport.Key && pl.LeaderboardType == leaderboardType);
+                if (leaderboardType == LeaderboardTypes.CallToArms)
+                {
+                    continue;
+                }
+                var leaderboardEntry = await context.PlayerLeaderboards.FirstOrDefaultAsync(pl => pl.PlayerId == player.Id && pl.ActivityId == activityReport.Key && pl.LeaderboardType == leaderboardType);
                 if (leaderboardEntry != null)
                 {
                     leaderboardEntry.Data = CalculateData(activityReport.Value, leaderboardType);
@@ -132,7 +142,7 @@ public class LeaderboardService : ILeaderboardService
                     var newLeaderboardEntry = new PlayerLeaderboard()
                     {
                         ActivityId = activityReport.Key,
-                        PlayerId = playerId,
+                        PlayerId = player.Id,
                         LeaderboardType = leaderboardType,
                         Data = CalculateData(activityReport.Value, leaderboardType)
                     };
@@ -162,6 +172,163 @@ public class LeaderboardService : ILeaderboardService
             case LeaderboardTypes.HighestScore:
                 return reports.Where((arp) => arp.Completed).Max(arp => arp.Score);
             default: return 0;
+        }
+    }
+
+    public async Task<bool> ShouldComputeCallToArmsLeaderboards(Player player)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync();
+
+        if (player.NeedsFullCheck)
+        {
+            return true;
+        }
+
+        var events = await GetCallToArmsActivities();
+        var now = DateTime.UtcNow;
+        if (events.Any(e => e.StartDate < now && (e.EndDate == null || now < e.EndDate)))
+        {
+            return true;
+        }
+
+
+        var hasLeaderboardEntries = await context.PlayerLeaderboards
+            .AnyAsync(pl => pl.PlayerId == player.Id && pl.LeaderboardType == LeaderboardTypes.CallToArms);
+        var hasActivityReports = await context.ActivityReportPlayers
+                    .Where(arp => arp.PlayerId == player.Id && arp.Completed)
+                    .Join(
+                        context.ActivityReports,
+                        arp => arp.ActivityReportId,
+                        ar => ar.Id,
+                        (arp, ar) => new { arp, ar })
+                    .Join(
+                        context.CallToArmsActivities,
+                        x => x.arp.ActivityId,
+                        ctaa => ctaa.ActivityId,
+                        (x, ctaa) => new { x.arp, x.ar, ctaa })
+                    .Join(
+                        context.CallToArmsEvents,
+                        x => x.ctaa.EventId,
+                        e => e.Id,
+                        (x, e) => new { x.arp, x.ar, e })
+                    .AnyAsync(x =>
+                        x.e.StartDate < x.ar.Date &&
+                        (x.e.EndDate == null || x.ar.Date < x.e.EndDate));
+
+
+        return !hasLeaderboardEntries && hasActivityReports;
+    }
+
+    public async Task ComputeCallToArmsLeaderboards(Player player)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync();
+
+        var events = await GetCallToArmsActivities();
+
+        foreach (var callToArmsEvent in events)
+        {
+            var activityIds = callToArmsEvent.CallToArmsActivities!
+                .Select(a => a.ActivityId)
+                .ToList();
+
+            var maxes = await context.ActivityReportPlayers
+                .Include(arp => arp.ActivityReport)
+                .Where(arp =>
+                    arp.PlayerId == player.Id
+                    && callToArmsEvent.StartDate < arp.ActivityReport.Date
+                    && arp.ActivityReport.Date < (callToArmsEvent.EndDate ?? DateTime.MaxValue)
+                    && arp.Completed
+                    && activityIds.Contains(arp.ActivityId))
+                .GroupBy(arp => arp.ActivityId)
+                .Select(g => new
+                {
+                    ActivityId = g.Key,
+                    MaxScore = g.Max(arp => arp.Score)
+                })
+                .ToListAsync();
+
+            var existingLeaderboardEntries = await context.PlayerLeaderboards
+                .Where(pl =>
+                    pl.PlayerId == player.Id
+                    && pl.LeaderboardType == LeaderboardTypes.CallToArms
+                    && maxes.Select(m => m.ActivityId).Contains(pl.ActivityId))
+                .ToListAsync();
+            foreach (var max in maxes)
+            {
+                var leaderboardEntry = existingLeaderboardEntries
+                    .FirstOrDefault(pl => pl.ActivityId == max.ActivityId);
+                if (leaderboardEntry != null)
+                {
+                    leaderboardEntry.Data = max.MaxScore;
+                }
+                else
+                {
+                    var newLeaderboardEntry = new PlayerLeaderboard()
+                    {
+                        ActivityId = max.ActivityId,
+                        PlayerId = player.Id,
+                        LeaderboardType = LeaderboardTypes.CallToArms,
+                        Data = max.MaxScore
+                    };
+                    context.PlayerLeaderboards.Add(newLeaderboardEntry);
+                }
+            }
+            await context.SaveChangesAsync();
+        }
+    }
+
+    private async Task<IEnumerable<CallToArmsEventDto>> GetCallToArmsActivities()
+    {
+        var result = await _redis.SetScanAsync("calltoarms:events").ToListAsync();
+
+        if (result.Count == 0)
+        {
+            try
+            {
+                await _refreshCallToArmsSemaphore.WaitAsync();
+
+                result = await _redis.SetScanAsync("calltoarms:events").ToListAsync();
+                if (result.Count == 0)
+                {
+                    await using var context = await _contextFactory.CreateDbContextAsync();
+                    var events = await context.CallToArmsEvents.Include(ctae => ctae.CallToArmsActivities).ToFacetsAsync<CallToArmsEventDto>();
+                    await _redis.SetAddAsync("calltoarms:events", events.Select(e => (RedisValue)JsonSerializer.Serialize(e)).ToArray());
+                    await _redis.KeyExpireAsync("calltoarms:events", TimeSpan.FromMinutes(15));
+                    return events;
+                }
+                else
+                {
+                    return result.Select(r => JsonSerializer.Deserialize<CallToArmsEventDto>(r.ToString())
+                        ?? throw new InvalidDataException("Unable to deserialize call to arms data")).ToList();
+                }
+            }
+            finally
+            {
+                _refreshCallToArmsSemaphore.Release();
+            }
+        }
+        else
+        {
+            return result.Select(r => JsonSerializer.Deserialize<CallToArmsEventDto>(r.ToString())
+            ?? throw new InvalidDataException("Unable to deserialize call to arms data")).ToList();
+        }
+    }
+
+    public async Task CheckAndComputeLeaderboards(long playerId, bool addedActivities)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync();
+        var player = await context.Players.FirstOrDefaultAsync(p => p.Id == playerId)
+            ?? throw new InvalidDataException($"Player {playerId} does not exist");
+
+        if (!addedActivities && !player.NeedsFullCheck)
+        {
+            return;
+        }
+
+        await ComputeLeaderboardsForPlayer(player);
+        if (await ShouldComputeCallToArmsLeaderboards(player))
+        {
+            await ComputeCallToArmsLeaderboards(player);
         }
     }
 }

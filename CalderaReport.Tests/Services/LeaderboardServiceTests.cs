@@ -5,18 +5,24 @@ using CalderaReport.Services;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Moq;
+using StackExchange.Redis;
 
 namespace CalderaReport.Tests.Services;
 
 public class LeaderboardServiceTests
 {
     private readonly Mock<IDbContextFactory<AppDbContext>> _contextFactoryMock;
+    private readonly Mock<IConnectionMultiplexer> _redisMock;
+    private readonly Mock<IDatabase> _redisDbMock;
     private readonly LeaderboardService _service;
 
     public LeaderboardServiceTests()
     {
         _contextFactoryMock = new Mock<IDbContextFactory<AppDbContext>>();
-        _service = new LeaderboardService(_contextFactoryMock.Object);
+        _redisMock = new Mock<IConnectionMultiplexer>();
+        _redisDbMock = new Mock<IDatabase>();
+        _redisMock.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(_redisDbMock.Object);
+        _service = new LeaderboardService(_contextFactoryMock.Object, _redisMock.Object);
     }
 
     [Fact]
@@ -27,7 +33,8 @@ public class LeaderboardServiceTests
         var players = new List<Player>
         {
             new Player { Id = 1, DisplayName = "Player1", DisplayNameCode = 1234, MembershipType = 3, FullDisplayName = "Player1#1234" },
-            new Player { Id = 2, DisplayName = "Player2", DisplayNameCode = 5678, MembershipType = 3, FullDisplayName = "Player2#5678" }
+            new Player { Id = 2, DisplayName = "Player2", DisplayNameCode = 5678, MembershipType = 3, FullDisplayName = "Player2#5678" },
+            new Player { Id = 3, DisplayName = "OtherPlayer", DisplayNameCode = 9012, MembershipType = 3, FullDisplayName = "OtherPlayer#9012" }
         };
         var leaderboards = new List<PlayerLeaderboard>
         {
@@ -50,16 +57,18 @@ public class LeaderboardServiceTests
         };
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(databaseName: "TestDb_GetLeaderboard")
+            .UseInMemoryDatabase(databaseName: $"TestDb_GetLeaderboard_{Guid.NewGuid()}")
             .Options;
-        using var context = new AppDbContext(options);
-        context.Activities.Add(activity);
-        context.Players.AddRange(players);
-        context.PlayerLeaderboards.AddRange(leaderboards);
-        await context.SaveChangesAsync();
+        using (var seedContext = new AppDbContext(options))
+        {
+            seedContext.Activities.Add(activity);
+            seedContext.Players.AddRange(players);
+            seedContext.PlayerLeaderboards.AddRange(leaderboards);
+            await seedContext.SaveChangesAsync();
+        }
 
         _contextFactoryMock.Setup(f => f.CreateDbContext())
-            .Returns(context);
+            .Returns(() => new AppDbContext(options));
 
         var result = await _service.GetLeaderboard(activityId, LeaderboardTypes.FastestCompletion, 10, 0);
 
@@ -75,12 +84,11 @@ public class LeaderboardServiceTests
         var activityId = 999L;
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(databaseName: "TestDb_InvalidActivity")
+            .UseInMemoryDatabase(databaseName: $"TestDb_InvalidActivity_{Guid.NewGuid()}")
             .Options;
-        using var context = new AppDbContext(options);
 
         _contextFactoryMock.Setup(f => f.CreateDbContext())
-            .Returns(context);
+            .Returns(() => new AppDbContext(options));
 
         var act = async () => await _service.GetLeaderboard(activityId, LeaderboardTypes.FastestCompletion, 10, 0);
 
@@ -112,16 +120,18 @@ public class LeaderboardServiceTests
         }).ToList();
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(databaseName: "TestDb_Pagination")
+            .UseInMemoryDatabase(databaseName: $"TestDb_Pagination_{Guid.NewGuid()}")
             .Options;
-        using var context = new AppDbContext(options);
-        context.Activities.Add(activity);
-        context.Players.AddRange(players);
-        context.PlayerLeaderboards.AddRange(leaderboards);
-        await context.SaveChangesAsync();
+        using (var seedContext = new AppDbContext(options))
+        {
+            seedContext.Activities.Add(activity);
+            seedContext.Players.AddRange(players);
+            seedContext.PlayerLeaderboards.AddRange(leaderboards);
+            await seedContext.SaveChangesAsync();
+        }
 
         _contextFactoryMock.Setup(f => f.CreateDbContext())
-            .Returns(context);
+            .Returns(() => new AppDbContext(options));
 
         var result = await _service.GetLeaderboard(activityId, LeaderboardTypes.FastestCompletion, 5, 5);
 
@@ -138,7 +148,8 @@ public class LeaderboardServiceTests
         var players = new List<Player>
         {
             new Player { Id = 1, DisplayName = "Player1", DisplayNameCode = 1234, MembershipType = 3, FullDisplayName = "Player1#1234" },
-            new Player { Id = 2, DisplayName = "Player2", DisplayNameCode = 5678, MembershipType = 3, FullDisplayName = "Player2#5678" }
+            new Player { Id = 2, DisplayName = "Player2", DisplayNameCode = 5678, MembershipType = 3, FullDisplayName = "Player2#5678" },
+            new Player { Id = 3, DisplayName = "OtherPlayer", DisplayNameCode = 9012, MembershipType = 3, FullDisplayName = "OtherPlayer#9012" }
         };
         var leaderboards = new List<PlayerLeaderboard>
         {
@@ -157,17 +168,27 @@ public class LeaderboardServiceTests
                 LeaderboardType = LeaderboardTypes.HighestScore,
                 Data = 900,
                 Player = players[1]
+            },
+            new PlayerLeaderboard
+            {
+                PlayerId = 3,
+                ActivityId = activityId,
+                LeaderboardType = LeaderboardTypes.HighestScore,
+                Data = 1100,
+                Player = players[2]
             }
         };
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(databaseName: "TestDb_PlayerLeaderboards")
+            .UseInMemoryDatabase(databaseName: $"TestDb_PlayerLeaderboards_{Guid.NewGuid()}")
             .Options;
-        using var context = new AppDbContext(options);
-        context.Activities.Add(activity);
-        context.Players.AddRange(players);
-        context.PlayerLeaderboards.AddRange(leaderboards);
-        await context.SaveChangesAsync();
+        using (var seedContext = new AppDbContext(options))
+        {
+            seedContext.Activities.Add(activity);
+            seedContext.Players.AddRange(players);
+            seedContext.PlayerLeaderboards.AddRange(leaderboards);
+            await seedContext.SaveChangesAsync();
+        }
 
         _contextFactoryMock.Setup(f => f.CreateDbContext())
             .Returns(() => new AppDbContext(options));
@@ -176,6 +197,8 @@ public class LeaderboardServiceTests
 
         result.Should().NotBeEmpty();
         result.Should().HaveCount(2);
+        result.First(r => r.Player.DisplayName == "Player1").Rank.Should().Be(2);
+        result.First(r => r.Player.DisplayName == "Player2").Rank.Should().Be(3);
     }
 
     [Fact]
