@@ -6,6 +6,8 @@ using CalderaReport.Domain.Configuration;
 using CalderaReport.Domain.Data;
 using CalderaReport.Services;
 using CalderaReport.Services.Abstract;
+using Hangfire;
+using Hangfire.PostgreSql;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
@@ -98,13 +100,20 @@ builder.Services.AddSingleton<ICrawlerService, CrawlerService>();
 builder.Services.AddSingleton<ILeaderboardService, LeaderboardService>();
 builder.Services.AddMemoryCache();
 
+builder.Services.AddHangfire(config => config.UsePostgreSqlStorage(c => c.UseNpgsqlConnection(builder.Configuration.GetConnectionString("PostgreSqlConnectionString"))));
+
+builder.Services.AddHangfireServer(options =>
+{
+    options.WorkerCount = Environment.ProcessorCount * 2;
+    options.Queues = new[] { "leaderboards-crawler" };
+});
+
 // Background services
 builder.Services.AddHostedService(sp =>
     new PlayerCrawler(
         sp.GetRequiredService<ILogger<PlayerCrawler>>(),
         sp.GetRequiredService<IDbContextFactory<AppDbContext>>(),
-        sp.GetRequiredService<ICrawlerService>(),
-        sp.GetRequiredService<ILeaderboardService>()));
+        sp.GetRequiredService<ICrawlerService>()));
 
 builder.Services.AddHostedService(sp =>
     new ActivityReportCrawler(

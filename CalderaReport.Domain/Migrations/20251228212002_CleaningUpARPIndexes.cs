@@ -23,7 +23,7 @@ namespace API.Domain.Migrations
                 table: "ActivityReportPlayers");
 
             migrationBuilder.Sql(@"
-                CREATE INDEX CONCURRENTLY
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS ""IX_ActivityReportPlayers_PlayerId_Completed""
                 ON ""ActivityReportPlayers"" (""PlayerId"", ""Completed"")
                 INCLUDE (""ActivityId"", ""ActivityReportId"");
                 ", suppressTransaction: true);

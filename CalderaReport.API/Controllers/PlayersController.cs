@@ -143,7 +143,7 @@ public class PlayersController : ControllerBase
 
             try
             {
-                BackgroundJob.Enqueue<ILeaderboardService>(s => s.CheckAndComputeLeaderboards(playerId, addedReports));
+                BackgroundJob.Enqueue<ILeaderboardService>("leaderboards-api", s => s.CheckAndComputeLeaderboards(playerId, addedReports));
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("JobStorage", StringComparison.OrdinalIgnoreCase))
             {
