@@ -10,17 +10,11 @@ namespace API.Domain.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropIndex(
-                name: "IX_ActivityReportPlayers_ActivityId_Completed_Duration",
-                table: "ActivityReportPlayers");
-
-            migrationBuilder.DropIndex(
-                name: "IX_ActivityReportPlayers_ActivityId_PlayerId",
-                table: "ActivityReportPlayers");
-
-            migrationBuilder.DropIndex(
-                name: "IX_ActivityReportPlayers_ActivityId_Score",
-                table: "ActivityReportPlayers");
+            migrationBuilder.Sql(@"
+                DROP INDEX IF EXISTS ""IX_ActivityReportPlayers_ActivityId_Completed_Duration"";
+                DROP INDEX IF EXISTS ""IX_ActivityReportPlayers_ActivityId_PlayerId"";
+                DROP INDEX IF EXISTS ""IX_ActivityReportPlayers_ActivityId_Score"";
+            ");
 
             migrationBuilder.Sql(@"
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS ""IX_ActivityReportPlayers_PlayerId_Completed""
