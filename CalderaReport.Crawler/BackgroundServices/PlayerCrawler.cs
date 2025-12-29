@@ -1,8 +1,8 @@
 ﻿using CalderaReport.Domain.Data;
-using CalderaReport.Domain.DB;
 using CalderaReport.Domain.DestinyApi;
 using CalderaReport.Domain.Enums;
 using CalderaReport.Services.Abstract;
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
 
 namespace CalderaReport.Crawler.BackgroundServices;
@@ -12,20 +12,17 @@ public class PlayerCrawler : BackgroundService
     private IDbContextFactory<AppDbContext> _contextFactory;
     private readonly ILogger<PlayerCrawler> _logger;
     private readonly ICrawlerService _crawlerService;
-    private readonly ILeaderboardService _leaderboardService;
 
-    private const int MaxConcurrentPlayers = 20;
+    private const int MaxConcurrentPlayers = 25;
 
     public PlayerCrawler(
         ILogger<PlayerCrawler> logger,
         IDbContextFactory<AppDbContext> contextFactory,
-        ICrawlerService crawlerService,
-        ILeaderboardService leaderboardService)
+        ICrawlerService crawlerService)
     {
         _logger = logger;
         _contextFactory = contextFactory;
         _crawlerService = crawlerService;
-        _leaderboardService = leaderboardService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -44,8 +41,10 @@ public class PlayerCrawler : BackgroundService
                     await completedTask;
                 }
 
-                var playerQueueId = await GetNextPlayerQueueItem(ct);
-                if (playerQueueId == null)
+                var availableSlots = MaxConcurrentPlayers - activeTasks.Count;
+                var batchSize = Math.Min(availableSlots, 10);
+                var playerQueueIds = await GetNextPlayerQueueItem(ct, batchSize);
+                if (!playerQueueIds.Any())
                 {
                     if (activeTasks.Count == 0)
                     {
@@ -60,7 +59,11 @@ public class PlayerCrawler : BackgroundService
                     continue;
                 }
 
-                activeTasks.Add(ProcessPlayer(playerQueueId.Value));
+                foreach (var playerId in playerQueueIds)
+                {
+                    var task = ProcessPlayer(playerId);
+                    activeTasks.Add(task);
+                }
             }
 
             await Task.WhenAll(activeTasks);
@@ -76,7 +79,7 @@ public class PlayerCrawler : BackgroundService
         }
     }
 
-    private async Task<long?> GetNextPlayerQueueItem(CancellationToken ct)
+    private async Task<IEnumerable<long>> GetNextPlayerQueueItem(CancellationToken ct, int batchSize)
     {
         try
         {
@@ -86,61 +89,53 @@ public class PlayerCrawler : BackgroundService
             var errorStatus = (int)PlayerQueueStatus.Error;
             var maxAttempts = 3;
 
-            var playerValues = await context.Database.SqlQuery<long?>($@"
+            var playerValues = await context.Database.SqlQuery<long>($@"
                     UPDATE ""PlayerCrawlQueue""
                     SET ""Status"" = {processingStatus}, ""Attempts"" = ""Attempts"" + 1
-                    WHERE ""Id"" = (
+                    WHERE ""Id"" IN (
                         SELECT ""Id""
                         FROM ""PlayerCrawlQueue""
                         WHERE ""Status"" IN ({queuedStatus}, {errorStatus})
                             AND ""Attempts"" < {maxAttempts}
                         ORDER BY ""Id""
                         FOR UPDATE SKIP LOCKED
-                        LIMIT 1
+                        LIMIT {batchSize}
                     )
                     RETURNING ""PlayerId""").ToListAsync(ct);
-            var playerValue = playerValues.FirstOrDefault();
 
-            return playerValue;
+            return playerValues ?? new List<long>();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error fetching next player queue item.");
-            return null;
+            return new List<long>();
         }
     }
 
     private async Task ProcessPlayer(long playerId)
     {
-        await using var context = await _contextFactory.CreateDbContextAsync();
         try
         {
-            var queueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId);
-            if (queueItem == null)
-            {
-                _logger.LogWarning("Player queue item not found for PlayerId: {PlayerId}", playerId);
-                return;
-            }
-
             var addedReports = await _crawlerService.CrawlPlayer(playerId);
 
-            var player = await context.Players.AsNoTracking().FirstOrDefaultAsync(p => p.Id == playerId) ?? throw new InvalidDataException($"Idk how we got here, but no player exists with id {playerId}");
+            BackgroundJob.Enqueue<ILeaderboardService>("leaderboards-crawler", s => s.CheckAndComputeLeaderboards(playerId, addedReports));
 
-            if (addedReports || player.NeedsFullCheck)
+            await using (var context = await _contextFactory.CreateDbContextAsync())
             {
-                await _leaderboardService.ComputeLeaderboardsForPlayer(player);
-                if (await _leaderboardService.ShouldComputeCallToArmsLeaderboards(player))
+                var queueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId);
+                if (queueItem == null)
                 {
-                    await _leaderboardService.ComputeCallToArmsLeaderboards(player);
+                    _logger.LogWarning("Player queue item not found for PlayerId: {PlayerId}", playerId);
+                    return;
                 }
+                queueItem.Status = PlayerQueueStatus.Completed;
+                queueItem.ProcessedAt = DateTime.UtcNow;
+                await context.SaveChangesAsync();
             }
-
-            queueItem.Status = PlayerQueueStatus.Completed;
-            queueItem.ProcessedAt = DateTime.UtcNow;
-            await context.SaveChangesAsync();
         }
         catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.PrivateAccount)
         {
+            await using var context = await _contextFactory.CreateDbContextAsync();
             try
             {
                 var queueItem = await context.PlayerCrawlQueue.FirstOrDefaultAsync(p => p.PlayerId == playerId);
@@ -161,6 +156,7 @@ public class PlayerCrawler : BackgroundService
         }
         catch (Exception ex)
         {
+            await using var context = await _contextFactory.CreateDbContextAsync();
             _logger.LogError(ex, "Error processing player {PlayerId}.", playerId);
             try
             {

@@ -9,6 +9,7 @@ using CalderaReport.Services;
 using CalderaReport.Services.Abstract;
 using Hangfire;
 using Hangfire.Dashboard;
+using Hangfire.Dashboard.BasicAuthorization;
 using Hangfire.PostgreSql;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -112,7 +113,11 @@ builder.Services.AddOpenApi();
 
 builder.Services.AddHangfire(config => config.UsePostgreSqlStorage(c => c.UseNpgsqlConnection(builder.Configuration.GetConnectionString("PostgreSqlConnectionString"))));
 
-builder.Services.AddHangfireServer();
+builder.Services.AddHangfireServer(options =>
+{
+    options.WorkerCount = Environment.ProcessorCount;
+    options.Queues = new[] { "default", "leaderboards-api" };
+});
 
 var corsAllowedOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
@@ -190,7 +195,34 @@ if (app.Environment.IsDevelopment())
 //app.UseHttpsRedirection();
 
 
-app.UseHangfireDashboard("/hangfire");
+var hangfireDashboardUsername = builder.Configuration["Hangfire:Dashboard:Username"];
+var hangfireDashboardPassword = builder.Configuration["Hangfire:Dashboard:Password"];
+if (string.IsNullOrWhiteSpace(hangfireDashboardUsername) || string.IsNullOrWhiteSpace(hangfireDashboardPassword))
+{
+    throw new InvalidOperationException("Hangfire dashboard credentials are not configured. Set Hangfire:Dashboard:Username and Hangfire:Dashboard:Password.");
+}
+
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = new[]
+    {
+        new BasicAuthAuthorizationFilter(new BasicAuthAuthorizationFilterOptions
+        {
+            RequireSsl = !app.Environment.IsDevelopment(),
+            SslRedirect = !app.Environment.IsDevelopment(),
+            LoginCaseSensitive = true,
+            Users = new[]
+            {
+                new BasicAuthAuthorizationUser
+                {
+                    Login = hangfireDashboardUsername,
+                    PasswordClear = hangfireDashboardPassword
+                }
+            }
+        })
+    }
+
+});
 
 using (var scope = app.Services.CreateScope())
 {
