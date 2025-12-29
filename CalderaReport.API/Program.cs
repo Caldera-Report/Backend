@@ -11,6 +11,7 @@ using Hangfire;
 using Hangfire.Dashboard;
 using Hangfire.Dashboard.BasicAuthorization;
 using Hangfire.PostgreSql;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OpenTelemetry;
@@ -192,6 +193,11 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedProto
+});
+
 //app.UseHttpsRedirection();
 
 
@@ -221,7 +227,6 @@ app.UseHangfireDashboard("/hangfire", new DashboardOptions
             }
         })
     }
-
 });
 
 using (var scope = app.Services.CreateScope())
