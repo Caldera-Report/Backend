@@ -214,8 +214,8 @@ app.UseHangfireDashboard("/hangfire", new DashboardOptions
     {
         new BasicAuthAuthorizationFilter(new BasicAuthAuthorizationFilterOptions
         {
-            RequireSsl = !app.Environment.IsDevelopment(),
-            SslRedirect = !app.Environment.IsDevelopment(),
+            RequireSsl = false,
+            SslRedirect = false,
             LoginCaseSensitive = true,
             Users = new[]
             {
