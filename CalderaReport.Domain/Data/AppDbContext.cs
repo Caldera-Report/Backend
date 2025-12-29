@@ -34,8 +34,6 @@ namespace CalderaReport.Domain.Data
             modelBuilder.Entity<ActivityReport>(entity =>
             {
                 entity.Property(ar => ar.Id).ValueGeneratedNever();
-                entity.HasIndex(ar => new { ar.ActivityId, ar.Date });
-                entity.HasIndex(ar => ar.ActivityId);
             });
 
             modelBuilder.Entity<ActivityReportPlayer>(entity =>

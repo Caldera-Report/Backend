@@ -3,17 +3,20 @@ using System;
 using CalderaReport.Domain.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace Worker.Migrations
+namespace API.Domain.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class WorkerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251229021021_DroppingUnusedActivityReportIndexes")]
+    partial class DroppingUnusedActivityReportIndexes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -48,7 +51,7 @@ namespace Worker.Migrations
 
                     b.HasIndex("OpTypeId");
 
-                    b.ToTable("Activities", (string)null);
+                    b.ToTable("Activities");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.ActivityReport", b =>
@@ -69,7 +72,7 @@ namespace Worker.Migrations
 
                     b.HasIndex("ActivityId");
 
-                    b.ToTable("ActivityReports", (string)null);
+                    b.ToTable("ActivityReports");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.ActivityReportPlayer", b =>
@@ -99,7 +102,7 @@ namespace Worker.Migrations
 
                     b.HasIndex("PlayerId");
 
-                    b.ToTable("ActivityReportPlayers", (string)null);
+                    b.ToTable("ActivityReportPlayers");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.CallToArmsActivity", b =>
@@ -122,7 +125,7 @@ namespace Worker.Migrations
 
                     b.HasIndex("EventId");
 
-                    b.ToTable("CallToArmsActivities", (string)null);
+                    b.ToTable("CallToArmsActivities");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.CallToArmsEvent", b =>
@@ -141,7 +144,7 @@ namespace Worker.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("CallToArmsEvents", (string)null);
+                    b.ToTable("CallToArmsEvents");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.ConquestMapping", b =>
@@ -167,7 +170,7 @@ namespace Worker.Migrations
 
                     b.HasIndex("ExpansionId");
 
-                    b.ToTable("ConquestMappings", (string)null);
+                    b.ToTable("ConquestMappings");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.Expansion", b =>
@@ -190,7 +193,7 @@ namespace Worker.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Expansions", (string)null);
+                    b.ToTable("Expansions");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.OpType", b =>
@@ -207,7 +210,7 @@ namespace Worker.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("OpTypes", (string)null);
+                    b.ToTable("OpTypes");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.Player", b =>
@@ -246,7 +249,7 @@ namespace Worker.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Players", (string)null);
+                    b.ToTable("Players");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.PlayerCrawlQueue", b =>
@@ -275,7 +278,7 @@ namespace Worker.Migrations
                     b.HasIndex("PlayerId")
                         .IsUnique();
 
-                    b.ToTable("PlayerCrawlQueue", (string)null);
+                    b.ToTable("PlayerCrawlQueue");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.PlayerLeaderboard", b =>
@@ -296,7 +299,7 @@ namespace Worker.Migrations
 
                     b.HasIndex("ActivityId", "LeaderboardType", "Data");
 
-                    b.ToTable("PlayerLeaderboards", (string)null);
+                    b.ToTable("PlayerLeaderboards");
                 });
 
             modelBuilder.Entity("CalderaReport.Domain.DB.Activity", b =>
