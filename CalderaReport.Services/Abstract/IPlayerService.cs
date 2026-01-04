@@ -1,6 +1,6 @@
-﻿using API.Domain.DTO.Responses;
-using CalderaReport.Domain.DB;
+﻿using CalderaReport.Domain.DB;
 using CalderaReport.Domain.DestinyApi;
+using CalderaReport.Domain.DTO.Responses;
 
 namespace CalderaReport.Services.Abstract;
 

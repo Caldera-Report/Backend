@@ -1,4 +1,3 @@
-using CalderaReport.API.Telemetry;
 using CalderaReport.Clients;
 using CalderaReport.Clients.Abstract;
 using CalderaReport.Clients.Registries;
@@ -8,10 +7,8 @@ using CalderaReport.Domain.Serializers;
 using CalderaReport.Services;
 using CalderaReport.Services.Abstract;
 using Hangfire;
-using Hangfire.Dashboard;
 using Hangfire.Dashboard.BasicAuthorization;
 using Hangfire.PostgreSql;
-using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OpenTelemetry;
@@ -75,9 +72,11 @@ if (!string.IsNullOrWhiteSpace(baseEndpoint))
         .WithTracing(tracing =>
         {
             tracing.AddHttpClientInstrumentation();
-            tracing.AddAspNetCoreInstrumentation();
+            tracing.AddAspNetCoreInstrumentation(options =>
+            {
+                options.RecordException = true;
+            });
             tracing.AddNpgsql();
-            tracing.AddSource(APITelemetry.ActivitySourceName);
             tracing.SetSampler(new TraceIdRatioBasedSampler(samplingRatio));
             tracing.AddOtlpExporter(opts =>
             {
@@ -106,11 +105,10 @@ if (!string.IsNullOrWhiteSpace(baseEndpoint))
     builder.Logging.AddFilter("Microsoft.Extensions.Logging.Console", builder.Environment.IsDevelopment() ? LogLevel.Debug : LogLevel.Information);
 }
 
-// Add services to the container.
-
 builder.Services.AddControllers().AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new Int64AsStringJsonConverter()));
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 builder.Services.AddHangfire(config => config.UsePostgreSqlStorage(c => c.UseNpgsqlConnection(builder.Configuration.GetConnectionString("PostgreSqlConnectionString"))));
 
@@ -158,6 +156,8 @@ builder.Services.AddScoped<IActivityService, ActivityService>();
 builder.Services.AddScoped<ILeaderboardService, LeaderboardService>();
 builder.Services.AddScoped<ICrawlerService, CrawlerService>();
 
+builder.Services.AddProblemDetails();
+
 builder.Services.AddPooledDbContextFactory<AppDbContext>(options =>
 {
     options.UseNpgsql(builder.Configuration.GetConnectionString("PostgreSqlConnectionString"), npgsqlOptions =>
@@ -187,19 +187,15 @@ builder.Services.AddSingleton<RateLimiterRegistry>();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+app.UseExceptionHandler();
+app.UseStatusCodePages();
+
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
+    app.UseSwagger();
+    app.UseSwaggerUI();
+    app.UseDeveloperExceptionPage();
 }
-
-app.UseForwardedHeaders(new ForwardedHeadersOptions
-{
-    ForwardedHeaders = ForwardedHeaders.XForwardedProto
-});
-
-//app.UseHttpsRedirection();
-
 
 var hangfireDashboardUsername = builder.Configuration["Hangfire:Dashboard:Username"];
 var hangfireDashboardPassword = builder.Configuration["Hangfire:Dashboard:Password"];

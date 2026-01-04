@@ -1,13 +1,10 @@
-﻿using API.Models.Responses;
-using CalderaReport.API.Telemetry;
-using CalderaReport.Domain.DestinyApi;
+﻿using CalderaReport.Domain.DestinyApi;
 using CalderaReport.Domain.DTO.Requests;
 using CalderaReport.Domain.DTO.Responses;
+using CalderaReport.Domain.Errors;
 using CalderaReport.Services.Abstract;
-using Facet.Extensions;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
-using System.Diagnostics;
 using System.Text.RegularExpressions;
 
 namespace CalderaReport.API.Controllers;
@@ -27,81 +24,86 @@ public class PlayersController : ControllerBase
         _crawlerService = crawlerService;
     }
 
+    /// <summary>
+    /// Retrieves detailed information about a player by their unique identifier.
+    /// </summary>
+    /// <param name="playerId">The unique identifier of the player whose information is to be retrieved.</param>
+    /// <returns>An <see cref="ActionResult{T}"/> containing a <see cref="PlayerDto"/> with the player's information if found;
+    /// otherwise, a 404 Not Found response with an error message.</returns>
+    [ProducesResponseType(typeof(PlayerDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiError), StatusCodes.Status404NotFound)]
     [HttpGet("{playerId}")]
-    public async Task<IActionResult> GetPlayerInfo(long playerId)
+    public async Task<ActionResult<PlayerDto>> GetPlayerInfo(long playerId)
     {
-        using var activity = APITelemetry.StartActivity("API.GetPlayerInfo");
-        activity?.SetTag("api.name", nameof(GetPlayerInfo));
-        activity?.SetTag("api.player.id", playerId);
         _logger.LogInformation("GetPlayerInfo request received for player ID {PlayerId}.", playerId);
-        try
+        var playerInfo = await _playerService.GetPlayer(playerId);
+        if (playerInfo == null)
         {
-            var playerInfo = await _playerService.GetPlayer(playerId);
-            if (playerInfo == null)
-            {
-                _logger.LogWarning("Player with ID {PlayerId} not found.", playerId);
-                return NotFound($"Player with ID {playerId} does not exist");
-            }
-            return new OkObjectResult(playerInfo);
+            _logger.LogWarning("Player with ID {PlayerId} not found.", playerId);
+            return NotFound(new ApiError($"Player with ID {playerId} does not exist", StatusCodes.Status404NotFound));
         }
-        catch (Exception ex)
-        {
-            activity?.AddException(ex);
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Error retrieving info for player ID {PlayerId}.", playerId);
-            return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
-        }
+
+        return Ok(new PlayerDto(playerInfo));
     }
 
+    /// <summary>
+    /// Searches for players matching the specified criteria in the request and returns a collection of player search
+    /// results.
+    /// </summary>
+    /// <remarks>If the player name appears to be a 19-digit numeric ID, the search will first attempt to find
+    /// a player by that ID. If no player is found by ID, or if the player name is not a 19-digit number, the search
+    /// will proceed by name. The search may query both the local database and external sources as needed.</remarks>
+    /// <param name="request">The search criteria used to find players. Must include a non-empty player name. If the player name is a 19-digit
+    /// number, the search will attempt to find a player by ID.</param>
+    /// <returns>An <see cref="ActionResult{T}"/> containing a collection of <see cref="PlayerSearchDto"/> objects that match the
+    /// search criteria. Returns a 400 Bad Request if the player name is missing.</returns>
+    [ProducesResponseType(typeof(IEnumerable<PlayerSearchDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiError), StatusCodes.Status400BadRequest)]
     [HttpPost("search")]
-    public async Task<IActionResult> SearchPlayers([FromBody] SearchRequest request)
+    public async Task<ActionResult<IEnumerable<PlayerSearchDto>>> SearchPlayers([FromBody] SearchRequest request)
     {
-        using var activity = APITelemetry.StartActivity("API.SearchForPlayer");
-        activity?.SetTag("api.name", nameof(SearchPlayers));
-        activity?.SetTag("api.player.query", request.playerName);
         var playerName = request.playerName;
         _logger.LogInformation("Search request received for player {PlayerName}.", playerName);
 
         if (string.IsNullOrEmpty(playerName))
         {
             _logger.LogWarning("Search request rejected due to missing player name.");
-            return new BadRequestObjectResult("Player name is required");
+            return BadRequest(new ApiError("Player name is required", StatusCodes.Status400BadRequest));
         }
-        try
+
+        if (Regex.IsMatch(playerName, @"^\d{19}$"))
         {
-            if (Regex.IsMatch(playerName, @"^\d{19}$"))
+            try
             {
-                try
+                var response = await _playerService.GetPlayer(long.Parse(playerName));
+                if (response != null)
                 {
-                    var response = await _playerService.GetPlayer(long.Parse(playerName));
-                    return Ok(response);
-                }
-                catch (ArgumentException ex) when (ex.Message.Contains("not found"))
-                { //Swallow to allow for searching of bungie api (just in case)
+                    return Ok(new PlayerSearchDto(response));
                 }
             }
+            catch (ArgumentException ex) when (ex.Message.Contains("not found"))
+            { // Swallow to allow for searching of Bungie API (just in case)
+            }
+        }
 
-            var searchResults = await _playerService.SearchDbForPlayer(playerName);
-            if (searchResults.Count() == 0)
-                searchResults = await _playerService.SearchForPlayer(playerName);
-            return Ok(searchResults.Select(p => p.ToFacet<PlayerSearchDto>()));
-        }
-        catch (Exception ex)
-        {
-            activity?.AddException(ex);
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Error searching for player {PlayerName}.", playerName);
-            return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
-        }
+        var searchResults = await _playerService.SearchDbForPlayer(playerName);
+        if (searchResults.Count() == 0)
+            searchResults = await _playerService.SearchForPlayer(playerName);
+        return Ok(searchResults.Select(p => new PlayerSearchDto(p)));
     }
 
+    /// <summary>
+    /// Retrieves a list of activity reports for the specified player and activity.
+    /// </summary>
+    /// <param name="playerId">The unique identifier of the player whose activity reports are to be retrieved.</param>
+    /// <param name="activityId">The unique identifier of the activity for which reports are requested.</param>
+    /// <returns>An <see cref="ActionResult{T}"/> containing an <see cref="ActivityReportListDto"/> with the player's reports for
+    /// the specified activity. Returns an empty list if no reports are found.</returns>
+    [ProducesResponseType(typeof(ActivityReportListDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiError), StatusCodes.Status404NotFound)]
     [HttpGet("{playerId}/stats/{activityId}")]
-    public async Task<IActionResult> GetPlayerReportsForActivity(long playerId, long activityId)
+    public async Task<ActionResult<ActivityReportListDto>> GetPlayerReportsForActivity(long playerId, long activityId)
     {
-        using var activity = APITelemetry.StartActivity("API.GetReportsForActivity");
-        activity?.SetTag("api.name", nameof(GetPlayerReportsForActivity));
-        activity?.SetTag("api.player.query", playerId);
-        activity?.SetTag("api.player.activity.query", activityId);
         _logger.LogInformation("Request recieved for playerId {playerId}, activity {activityId}", playerId, activityId);
 
         try
@@ -111,6 +113,7 @@ public class PlayersController : ControllerBase
             var average = TimeSpan.FromMilliseconds(averageMs);
             var fastest = reports.OrderBy(r => r.Duration).FirstOrDefault(r => r.Completed);
             var recent = reports.OrderByDescending(r => r.Date).FirstOrDefault();
+
             return Ok(new ActivityReportListDto
             {
                 Reports = reports.OrderBy(arpd => arpd.Date).ToList(),
@@ -120,21 +123,28 @@ public class PlayersController : ControllerBase
                 CountCompleted = reports.Count(r => r.Completed)
             });
         }
-        catch (Exception ex)
+        catch (ArgumentException)
         {
-            activity?.AddException(ex);
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "An error occurred while fetching reports for player: {playerId}, activity: {activityId}", playerId, activityId);
-            return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
+            return NotFound(new ApiError($"Either the playerId or activityId provided does not exist", StatusCodes.Status404NotFound));
         }
     }
 
+    /// <summary>
+    /// Initiates a crawl to load activity reports for the specified player and enqueues leaderboard processing if
+    /// available.
+    /// </summary>
+    /// <remarks>This method triggers background processing for leaderboard updates if the background job
+    /// system is configured. If the background job system is unavailable, leaderboard processing is skipped without
+    /// affecting the activity report loading.</remarks>
+    /// <param name="playerId">The unique identifier of the player whose activity reports are to be loaded.</param>
+    /// <returns>An HTTP 204 No Content response if the activity reports are loaded successfully; HTTP 404 Not Found if the
+    /// player does not exist; or HTTP 403 Forbidden if the player's account is private.</returns>
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ApiError), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiError), StatusCodes.Status403Forbidden)]
     [HttpPost("{playerId}/load")]
-    public async Task<IActionResult> LoadPlayerActivityReports(long playerId)
+    public async Task<ActionResult> LoadPlayerActivityReports(long playerId)
     {
-        using var activity = APITelemetry.StartActivity("PlayerFunctions.LoadPlayerActivities");
-        activity?.SetTag("api.function.name", nameof(LoadPlayerActivityReports));
-        activity?.SetTag("api.player.membershipId", playerId);
         _logger.LogInformation("Activities load requested for player {MembershipId}.", playerId);
 
         try
@@ -154,15 +164,11 @@ public class PlayersController : ControllerBase
         }
         catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.AccountNotFound)
         {
-            return NotFound($"Player {playerId} does not exist");
+            return NotFound(new ApiError($"Player {playerId} does not exist", StatusCodes.Status404NotFound));
         }
         catch (DestinyApiException ex) when (Enum.TryParse(ex.ErrorCode.ToString(), out BungieErrorCodes result) && result == BungieErrorCodes.PrivateAccount)
         {
-            return StatusCode(StatusCodes.Status403Forbidden, $"Player {playerId} has chosen to keep this information private");
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
+            return StatusCode(StatusCodes.Status403Forbidden, new ApiError($"Player {playerId} has chosen to keep this information private", StatusCodes.Status403Forbidden));
         }
     }
 }

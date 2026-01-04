@@ -1,6 +1,6 @@
-using API.Models.Responses;
 using CalderaReport.Domain.Data;
 using CalderaReport.Domain.DB;
+using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Services;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;

@@ -6,8 +6,8 @@ namespace CalderaReport.Services.Abstract;
 
 public interface ILeaderboardService
 {
-    public Task<IEnumerable<LeaderboardResponse>> GetLeaderboard(long activityId, LeaderboardTypes type, int count, int offset);
-    public Task<IEnumerable<LeaderboardResponse>> GetLeaderboardsForPlayer(List<long> playerIds, long activityId, LeaderboardTypes type);
+    public Task<IEnumerable<LeaderboardDTO>> GetLeaderboard(long activityId, LeaderboardTypes type, int count, int offset);
+    public Task<IEnumerable<LeaderboardDTO>> GetLeaderboardsForPlayer(List<long> playerIds, long activityId, LeaderboardTypes type);
     public Task ComputeLeaderboardsForPlayer(Player player);
     public Task<bool> ShouldComputeCallToArmsLeaderboards(Player player);
     public Task ComputeCallToArmsLeaderboards(Player player);

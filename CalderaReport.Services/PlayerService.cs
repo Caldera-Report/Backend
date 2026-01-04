@@ -1,10 +1,9 @@
-﻿using API.Domain.DTO.Responses;
-using CalderaReport.Clients.Abstract;
+﻿using CalderaReport.Clients.Abstract;
 using CalderaReport.Domain.Data;
 using CalderaReport.Domain.DB;
 using CalderaReport.Domain.DestinyApi;
+using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Services.Abstract;
-using Facet.Extensions.EFCore;
 using Microsoft.EntityFrameworkCore;
 using StackExchange.Redis;
 
@@ -180,9 +179,22 @@ public class PlayerService : IPlayerService
     {
         await using var context = await _contextFactory.CreateDbContextAsync();
 
+        if (!await context.ActivityReportPlayers.AnyAsync(arp => arp.ActivityId == activityId && arp.PlayerId == playerId))
+        {
+            throw new ArgumentException("Invalid activityId or playerId - no reports found.");
+        }
+
         var reports = await context.ActivityReportPlayers
+            .AsNoTracking()
             .Where(arp => arp.ActivityId == activityId && arp.PlayerId == playerId)
-            .ToFacetsAsync<ActivityReportPlayerDto>();
+            .Select(arp => new ActivityReportPlayerDto
+            {
+                Id = arp.ActivityReportId.ToString(),
+                Date = arp.ActivityReport.Date,
+                Completed = arp.Completed,
+                Duration = arp.Duration
+            })
+            .ToListAsync();
 
         return reports;
     }

@@ -1,7 +1,5 @@
-﻿using API.Models.Responses;
-using CalderaReport.API.Telemetry;
+﻿using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Services.Abstract;
-using Facet.Extensions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
@@ -20,25 +18,16 @@ public class ActivitiesController : ControllerBase
         _activityService = activityService;
     }
 
-
+    /// <summary>
+    /// Gets all activities
+    /// </summary>
+    /// <response code="200">Activities found with no errors</response>
+    [ProducesResponseType(typeof(IEnumerable<OpTypeDto>), StatusCodes.Status200OK)]
     [HttpGet]
-    public async Task<IActionResult> GetActivities()
+    public async Task<ActionResult<IEnumerable<OpTypeDto>>> GetActivities()
     {
-        using var activity = APITelemetry.StartActivity("API.GetActivities");
-        activity?.SetTag("api.name", nameof(GetActivities));
         _logger.LogInformation("Recieved request to get all activities");
-        try
-        {
-            var ops = await _activityService.GetAllActivities();
-            return Ok(ops);
-
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error occurred while getting activities");
-            activity?.SetTag("error", true);
-            activity?.SetTag("error.message", ex.Message);
-            return StatusCode(StatusCodes.Status500InternalServerError, "An error occurred while processing your request.");
-        }
+        var ops = await _activityService.GetAllActivities();
+        return Ok(ops);
     }
 }

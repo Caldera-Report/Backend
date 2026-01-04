@@ -1,7 +1,6 @@
-﻿using API.Models.Responses;
-using CalderaReport.Domain.Data;
+﻿using CalderaReport.Domain.Data;
+using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Services.Abstract;
-using Facet.Extensions;
 using Microsoft.EntityFrameworkCore;
 using StackExchange.Redis;
 using System.Text.Json;
@@ -42,7 +41,7 @@ public class ActivityService : IActivityService
             .Include(o => o.Activities.Where(a => a.Enabled))
             .Where(o => o.Activities.Any(a => a.Enabled))
             .ToListAsync();
-        var activityDtos = activities.Select(a => a.ToFacet<OpTypeDto>()).ToArray();
+        var activityDtos = activities.Select(opType => new OpTypeDto(opType)).ToArray();
         await _cache.StringSetAsync("activities:all", JsonSerializer.Serialize(activityDtos), new TimeSpan(0, 1, 0, 0));
         return activityDtos;
     }

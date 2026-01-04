@@ -1,5 +1,5 @@
-﻿using API.Models.Responses;
-using CalderaReport.Domain.DB;
+﻿using CalderaReport.Domain.DB;
+using CalderaReport.Domain.DTO.Responses;
 
 namespace CalderaReport.Services.Abstract;
 

@@ -1,10 +1,8 @@
-﻿using API.Models.Responses;
-using CalderaReport.Domain.Data;
+﻿using CalderaReport.Domain.Data;
 using CalderaReport.Domain.DB;
 using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Domain.Enums;
 using CalderaReport.Services.Abstract;
-using Facet.Extensions.EFCore;
 using Microsoft.EntityFrameworkCore;
 using StackExchange.Redis;
 using System.Globalization;
@@ -24,7 +22,7 @@ public class LeaderboardService : ILeaderboardService
         _redis = redis.GetDatabase();
     }
 
-    public async Task<IEnumerable<LeaderboardResponse>> GetLeaderboard(long activityId, LeaderboardTypes type, int count, int offset)
+    public async Task<IEnumerable<LeaderboardDTO>> GetLeaderboard(long activityId, LeaderboardTypes type, int count, int offset)
     {
         await using var context = _contextFactory.CreateDbContext();
 
@@ -48,7 +46,7 @@ public class LeaderboardService : ILeaderboardService
             .ToDictionaryAsync(a => a.Id, a => a);
 
         return leaderboard
-            .Select((pl, i) => new LeaderboardResponse()
+            .Select((pl, i) => new LeaderboardDTO()
             {
                 Player = new PlayerDto(pl.Player),
                 Rank = offset + i + 1,
@@ -57,13 +55,13 @@ public class LeaderboardService : ILeaderboardService
             .ToList();
     }
 
-    public async Task<IEnumerable<LeaderboardResponse>> GetLeaderboardsForPlayer(List<long> playerIds, long activityId, LeaderboardTypes type)
+    public async Task<IEnumerable<LeaderboardDTO>> GetLeaderboardsForPlayer(List<long> playerIds, long activityId, LeaderboardTypes type)
     {
         await using var context = _contextFactory.CreateDbContext();
 
         if (playerIds.Count == 0)
         {
-            return new List<LeaderboardResponse>();
+            return new List<LeaderboardDTO>();
         }
 
         if (!await context.Activities.AnyAsync(a => a.Id == activityId))
@@ -89,7 +87,7 @@ public class LeaderboardService : ILeaderboardService
         var leaderboardTasks = leaderboards.Select(async pl =>
         {
             var rank = await ComputePlayerScore(pl);
-            return new LeaderboardResponse
+            return new LeaderboardDTO
             {
                 Player = new PlayerDto(pl.Player),
                 Rank = rank,
@@ -291,7 +289,12 @@ public class LeaderboardService : ILeaderboardService
                 if (result.Count == 0)
                 {
                     await using var context = await _contextFactory.CreateDbContextAsync();
-                    var events = await context.CallToArmsEvents.Include(ctae => ctae.CallToArmsActivities).ToFacetsAsync<CallToArmsEventDto>();
+                    var events = await context.CallToArmsEvents
+                        .Include(ctae => ctae.CallToArmsActivities)
+                        .ThenInclude(ctaa => ctaa.Activity)
+                        .AsNoTracking()
+                        .Select(ctae => new CallToArmsEventDto(ctae))
+                        .ToListAsync();
                     await _redis.SetAddAsync("calltoarms:events", events.Select(e => (RedisValue)JsonSerializer.Serialize(e)).ToArray());
                     await _redis.KeyExpireAsync("calltoarms:events", TimeSpan.FromMinutes(15));
                     return events;

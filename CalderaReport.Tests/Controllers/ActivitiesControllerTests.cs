@@ -1,5 +1,5 @@
-using API.Models.Responses;
 using CalderaReport.API.Controllers;
+using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Services.Abstract;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
@@ -33,7 +33,7 @@ public class ActivitiesControllerTests
                 Name = "Strike",
                 Activities = new List<ActivityDto>
                 {
-                    new ActivityDto { Id = 100, Name = "Test Strike" }
+                    new ActivityDto { Id = "100", Name = "Test Strike" }
                 }
             }
         };

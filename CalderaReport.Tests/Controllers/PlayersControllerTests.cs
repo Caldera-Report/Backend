@@ -1,4 +1,3 @@
-using API.Domain.DTO.Responses;
 using CalderaReport.API.Controllers;
 using CalderaReport.Domain.DB;
 using CalderaReport.Domain.DestinyApi;
@@ -50,7 +49,7 @@ public class PlayersControllerTests
 
         result.Should().BeOfType<OkObjectResult>();
         var okResult = result as OkObjectResult;
-        okResult!.Value.Should().Be(player);
+        okResult!.Value.Should().BeEquivalentTo(new API.Models.Responses.PlayerDto(player));
     }
 
     [Fact]

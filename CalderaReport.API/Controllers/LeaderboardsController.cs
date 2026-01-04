@@ -1,10 +1,10 @@
-﻿using CalderaReport.API.Telemetry;
-using CalderaReport.Domain.DTO.Requests;
+﻿using CalderaReport.Domain.DTO.Requests;
+using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Domain.Enums;
+using CalderaReport.Domain.Errors;
 using CalderaReport.Services.Abstract;
 using Microsoft.AspNetCore.Mvc;
 using System.ComponentModel.DataAnnotations;
-using System.Diagnostics;
 
 namespace CalderaReport.API.Controllers;
 
@@ -14,69 +14,54 @@ public class LeaderboardsController : ControllerBase
 {
     private readonly ILeaderboardService _leaderboardService;
     private readonly IPlayerService _playerService;
-    private readonly ILogger<LeaderboardsController> _logger;
 
-    public LeaderboardsController(ILogger<LeaderboardsController> logger, ILeaderboardService leaderboardService, IPlayerService playerService)
+    public LeaderboardsController(ILeaderboardService leaderboardService, IPlayerService playerService)
     {
-        _logger = logger;
         _leaderboardService = leaderboardService;
         _playerService = playerService;
     }
 
+    /// <summary>
+    /// Get the leaderboard for a specific activity and leaderboard type.
+    /// </summary>
+    /// <param name="leaderboardType">The type of leaderboard to retrieve.</param>
+    /// <param name="activityId">The ID of the activity.</param>
+    /// <param name="count">The number of entries to retrieve.</param>
+    /// <param name="offset">The offset for pagination.</param>
+    /// <response code="200">Activities found with no errors</response>
+    /// <response code="400">Invalid leaderboard type.</response>
+    [ProducesResponseType(typeof(IEnumerable<LeaderboardDTO>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiError), StatusCodes.Status400BadRequest)]
     [HttpGet("{leaderboardType}/{activityId}")]
-    public async Task<IActionResult> GetLeaderboard(int leaderboardType, long activityId, [FromQuery][Required] int count, [FromQuery][Required] int offset)
+    public async Task<ActionResult<IEnumerable<LeaderboardDTO>>> GetLeaderboard(int leaderboardType, long activityId, [FromQuery][Required] int count, [FromQuery][Required] int offset)
     {
-        using var activity = APITelemetry.StartActivity("API.GetLeaderboard");
-        activity?.SetTag("api.function.name", nameof(GetLeaderboard));
-        activity?.SetTag("api.activity.id", activityId);
-        activity?.SetTag("api.leaderboard.type", leaderboardType);
-        try
-        {
-            if (!Enum.TryParse(leaderboardType.ToString(), out LeaderboardTypes type) || !Enum.IsDefined(type))
-                return new BadRequestResult();
-            var leaderboard = await _leaderboardService.GetLeaderboard(activityId, type, count, offset);
-            return Ok(leaderboard);
-        }
-        catch (Exception ex)
-        {
-            activity?.AddException(ex);
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Error retrieving leaderboard for activity: {ActivityId}, leaderboard: {leaderboardType}.", activityId, leaderboardType);
-            return StatusCode(StatusCodes.Status500InternalServerError, ex);
-        }
+        if (!Enum.TryParse(leaderboardType.ToString(), out LeaderboardTypes type) || !Enum.IsDefined(type))
+            return BadRequest(new ApiError("Invalid leaderboard type.", StatusCodes.Status400BadRequest));
+
+        var leaderboard = await _leaderboardService.GetLeaderboard(activityId, type, count, offset);
+        return Ok(leaderboard);
     }
 
+    /// <summary>
+    /// Search the leaderboard for a specific activity and leaderboard type by player name.
+    /// </summary>
+    /// <param name="leaderboardType">The type of leaderboard to search.</param>
+    /// <param name="activityId">The ID of the activity.</param>
+    /// <param name="request">The search request containing the player name.</param>
+    /// response code="200">Players found with no errors</response>
+    /// response code="400">Invalid leaderboard type.</response>
+    [ProducesResponseType(typeof(IEnumerable<LeaderboardDTO>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiError), StatusCodes.Status400BadRequest)]
     [HttpPost("{leaderboardType}/{activityId}/search")]
-    public async Task<IActionResult> SearchLeaderboardForPlayer(int leaderboardType, long activityId, [FromBody][Required] SearchRequest request)
+    public async Task<ActionResult<IEnumerable<LeaderboardDTO>>> SearchLeaderboardForPlayer(int leaderboardType, long activityId, [FromBody][Required] SearchRequest request)
     {
-        using var activity = APITelemetry.StartActivity("ActivityFunctions.SearchForPlayerLeaderboard");
-        activity?.SetTag("api.function.name", nameof(SearchLeaderboardForPlayer));
-        activity?.SetTag("api.activity.id", activityId);
-        activity?.SetTag("api.leaderboard.type", leaderboardType);
-        try
-        {
-            if (!Enum.TryParse(leaderboardType.ToString(), out LeaderboardTypes type) || !Enum.IsDefined(type))
-                return new BadRequestResult();
+        if (!Enum.TryParse(leaderboardType.ToString(), out LeaderboardTypes type) || !Enum.IsDefined(type))
+            return BadRequest(new ApiError("Invalid leaderboard type.", StatusCodes.Status400BadRequest));
 
-            var players = await _playerService.SearchDbForPlayer(request.playerName);
-            var playerIds = players.Select(p => p.Id).ToList();
+        var players = await _playerService.SearchDbForPlayer(request.playerName);
+        var playerIds = players.Select(p => p.Id).ToList();
 
-            var leaderboard = await _leaderboardService.GetLeaderboardsForPlayer(playerIds, activityId, type);
-            return Ok(leaderboard);
-        }
-        catch (ArgumentException ex)
-        {
-            activity?.AddException(ex);
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Invalid arguments");
-            return StatusCode(StatusCodes.Status400BadRequest, ex);
-        }
-        catch (Exception ex)
-        {
-            activity?.AddException(ex);
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Error retrieving leaderboards for player search query {searchRequest}, activity: {activityId}, leaderboard type: {leaderboardType}", request.playerName, activityId, leaderboardType);
-            return StatusCode(StatusCodes.Status500InternalServerError, ex);
-        }
+        var leaderboard = await _leaderboardService.GetLeaderboardsForPlayer(playerIds, activityId, type);
+        return Ok(leaderboard);
     }
 }

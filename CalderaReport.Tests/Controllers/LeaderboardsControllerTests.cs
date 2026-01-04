@@ -37,7 +37,7 @@ public class LeaderboardsControllerTests
         var activityId = 123L;
         var count = 10;
         var offset = 0;
-        var leaderboard = new List<LeaderboardResponse> { new LeaderboardResponse { Rank = 1, Data = "test" } };
+        var leaderboard = new List<LeaderboardDTO> { new LeaderboardDTO { Rank = 1, Data = "test" } };
 
         _leaderboardServiceMock.Setup(s => s.GetLeaderboard(activityId, LeaderboardTypes.FastestCompletion, count, offset))
             .ReturnsAsync(leaderboard);
@@ -90,7 +90,7 @@ public class LeaderboardsControllerTests
         {
             new Player { Id = 456L, DisplayName = "TestPlayer", DisplayNameCode = 1234, MembershipType = 3, FullDisplayName = "TestPlayer#1234" }
         };
-        var leaderboard = new List<LeaderboardResponse> { new LeaderboardResponse { Rank = 5, Data = "test" } };
+        var leaderboard = new List<LeaderboardDTO> { new LeaderboardDTO { Rank = 5, Data = "test" } };
 
         _playerServiceMock.Setup(s => s.SearchDbForPlayer(request.playerName))
             .ReturnsAsync(players);
