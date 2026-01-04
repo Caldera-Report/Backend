@@ -2,7 +2,6 @@ using CalderaReport.API.Controllers;
 using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Services.Abstract;
 using FluentAssertions;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -43,8 +42,8 @@ public class ActivitiesControllerTests
 
         var result = await _controller.GetActivities();
 
-        result.Should().BeOfType<OkObjectResult>();
-        var okResult = result as OkObjectResult;
+        result.Result.Should().BeOfType<OkObjectResult>();
+        var okResult = result.Result as OkObjectResult;
         okResult!.Value.Should().BeEquivalentTo(activities);
     }
 
@@ -54,11 +53,10 @@ public class ActivitiesControllerTests
         _activityServiceMock.Setup(s => s.GetAllActivities())
             .ThrowsAsync(new Exception("Database connection failed"));
 
-        var result = await _controller.GetActivities();
+        var act = async () => await _controller.GetActivities();
 
-        result.Should().BeOfType<ObjectResult>();
-        var objectResult = result as ObjectResult;
-        objectResult!.StatusCode.Should().Be(StatusCodes.Status500InternalServerError);
+        await act.Should().ThrowAsync<Exception>()
+            .WithMessage("Database connection failed");
     }
 
     [Fact]
@@ -70,8 +68,8 @@ public class ActivitiesControllerTests
 
         var result = await _controller.GetActivities();
 
-        result.Should().BeOfType<OkObjectResult>();
-        var okResult = result as OkObjectResult;
+        result.Result.Should().BeOfType<OkObjectResult>();
+        var okResult = result.Result as OkObjectResult;
         var resultValue = okResult!.Value as IEnumerable<OpTypeDto>;
         resultValue.Should().BeEmpty();
     }

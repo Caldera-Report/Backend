@@ -1,9 +1,7 @@
-using API.Models.Responses;
 using CalderaReport.Domain.DB;
 using CalderaReport.Services;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using System.Text.Json;
 
 namespace CalderaReport.Tests.Integration;
 

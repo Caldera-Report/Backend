@@ -57,9 +57,9 @@ public class LeaderboardServiceIntegrationTests : IntegrationTestBase
         result.Should().NotBeEmpty();
         result.Should().HaveCount(2);
         result.First().Rank.Should().Be(1);
-        result.First().Player.DisplayName.Should().Be("FastPlayer");
+        result.First().Player.FullDisplayName.Should().Be("FastPlayer#1111");
         result.Last().Rank.Should().Be(2);
-        result.Last().Player.DisplayName.Should().Be("SlowPlayer");
+        result.Last().Player.FullDisplayName.Should().Be("SlowPlayer#2222");
     }
 
     [Fact]
@@ -159,7 +159,7 @@ public class LeaderboardServiceIntegrationTests : IntegrationTestBase
 
         result.Should().NotBeEmpty();
         result.Should().HaveCount(1);
-        result.First().Player.DisplayName.Should().Be("TargetPlayer");
+        result.First().Player.FullDisplayName.Should().Be("TargetPlayer#4001");
         result.First().Rank.Should().Be(1);
     }
 

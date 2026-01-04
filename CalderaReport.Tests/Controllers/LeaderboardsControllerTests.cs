@@ -5,27 +5,22 @@ using CalderaReport.Domain.DTO.Responses;
 using CalderaReport.Domain.Enums;
 using CalderaReport.Services.Abstract;
 using FluentAssertions;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 using Moq;
 
 namespace CalderaReport.Tests.Controllers;
 
 public class LeaderboardsControllerTests
 {
-    private readonly Mock<ILogger<LeaderboardsController>> _loggerMock;
     private readonly Mock<ILeaderboardService> _leaderboardServiceMock;
     private readonly Mock<IPlayerService> _playerServiceMock;
     private readonly LeaderboardsController _controller;
 
     public LeaderboardsControllerTests()
     {
-        _loggerMock = new Mock<ILogger<LeaderboardsController>>();
         _leaderboardServiceMock = new Mock<ILeaderboardService>();
         _playerServiceMock = new Mock<IPlayerService>();
         _controller = new LeaderboardsController(
-            _loggerMock.Object,
             _leaderboardServiceMock.Object,
             _playerServiceMock.Object);
     }
@@ -44,8 +39,8 @@ public class LeaderboardsControllerTests
 
         var result = await _controller.GetLeaderboard(leaderboardType, activityId, count, offset);
 
-        result.Should().BeOfType<OkObjectResult>();
-        var okResult = result as OkObjectResult;
+        result.Result.Should().BeOfType<OkObjectResult>();
+        var okResult = result.Result as OkObjectResult;
         okResult!.Value.Should().Be(leaderboard);
     }
 
@@ -59,7 +54,7 @@ public class LeaderboardsControllerTests
 
         var result = await _controller.GetLeaderboard(leaderboardType, activityId, count, offset);
 
-        result.Should().BeOfType<BadRequestResult>();
+        result.Result.Should().BeOfType<BadRequestObjectResult>();
     }
 
     [Fact]
@@ -73,11 +68,10 @@ public class LeaderboardsControllerTests
         _leaderboardServiceMock.Setup(s => s.GetLeaderboard(activityId, LeaderboardTypes.FastestCompletion, count, offset))
             .ThrowsAsync(new Exception("Database error"));
 
-        var result = await _controller.GetLeaderboard(leaderboardType, activityId, count, offset);
+        var act = async () => await _controller.GetLeaderboard(leaderboardType, activityId, count, offset);
 
-        result.Should().BeOfType<ObjectResult>();
-        var objectResult = result as ObjectResult;
-        objectResult!.StatusCode.Should().Be(StatusCodes.Status500InternalServerError);
+        await act.Should().ThrowAsync<Exception>()
+            .WithMessage("Database error");
     }
 
     [Fact]
@@ -102,7 +96,7 @@ public class LeaderboardsControllerTests
 
         var result = await _controller.SearchLeaderboardForPlayer(leaderboardType, activityId, request);
 
-        result.Should().BeOfType<OkObjectResult>();
+        result.Result.Should().BeOfType<OkObjectResult>();
     }
 
     [Fact]
@@ -115,7 +109,7 @@ public class LeaderboardsControllerTests
         // Similar to GetLeaderboard, TryParse succeeds for numeric strings
         var result = await _controller.SearchLeaderboardForPlayer(leaderboardType, activityId, request);
 
-        result.Should().BeOfType<BadRequestResult>();
+        result.Result.Should().BeOfType<BadRequestObjectResult>();
     }
 
     [Fact]
@@ -128,10 +122,9 @@ public class LeaderboardsControllerTests
         _playerServiceMock.Setup(s => s.SearchDbForPlayer(request.playerName))
             .ThrowsAsync(new ArgumentException("Invalid player name"));
 
-        var result = await _controller.SearchLeaderboardForPlayer(leaderboardType, activityId, request);
+        var act = async () => await _controller.SearchLeaderboardForPlayer(leaderboardType, activityId, request);
 
-        result.Should().BeOfType<ObjectResult>();
-        var objectResult = result as ObjectResult;
-        objectResult!.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("Invalid player name");
     }
 }

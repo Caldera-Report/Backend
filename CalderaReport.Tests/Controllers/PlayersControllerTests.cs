@@ -3,11 +3,9 @@ using CalderaReport.Domain.DB;
 using CalderaReport.Domain.DestinyApi;
 using CalderaReport.Domain.DTO.Requests;
 using CalderaReport.Domain.DTO.Responses;
-using CalderaReport.Domain.Enums;
 using CalderaReport.Services.Abstract;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -47,9 +45,9 @@ public class PlayersControllerTests
 
         var result = await _controller.GetPlayerInfo(playerId);
 
-        result.Should().BeOfType<OkObjectResult>();
-        var okResult = result as OkObjectResult;
-        okResult!.Value.Should().BeEquivalentTo(new API.Models.Responses.PlayerDto(player));
+        result.Result.Should().BeOfType<OkObjectResult>();
+        var okResult = result.Result as OkObjectResult;
+        okResult!.Value.Should().BeEquivalentTo(new PlayerDto(player));
     }
 
     [Fact]
@@ -61,7 +59,7 @@ public class PlayersControllerTests
 
         var result = await _controller.GetPlayerInfo(playerId);
 
-        result.Should().BeOfType<NotFoundObjectResult>();
+        result.Result.Should().BeOfType<NotFoundObjectResult>();
     }
 
     [Fact]
@@ -71,11 +69,10 @@ public class PlayersControllerTests
         _playerServiceMock.Setup(s => s.GetPlayer(playerId))
             .ThrowsAsync(new Exception("Database error"));
 
-        var result = await _controller.GetPlayerInfo(playerId);
+        var act = async () => await _controller.GetPlayerInfo(playerId);
 
-        result.Should().BeOfType<ObjectResult>();
-        var objectResult = result as ObjectResult;
-        objectResult!.StatusCode.Should().Be(StatusCodes.Status500InternalServerError);
+        await act.Should().ThrowAsync<Exception>()
+            .WithMessage("Database error");
     }
 
     [Fact]
@@ -92,7 +89,9 @@ public class PlayersControllerTests
 
         var result = await _controller.SearchPlayers(request);
 
-        result.Should().BeOfType<OkObjectResult>();
+        result.Result.Should().BeOfType<OkObjectResult>();
+        var okResult = result.Result as OkObjectResult;
+        okResult!.Value.Should().BeEquivalentTo(players.Select(p => new PlayerSearchDto(p)));
     }
 
     [Fact]
@@ -102,7 +101,7 @@ public class PlayersControllerTests
 
         var result = await _controller.SearchPlayers(request);
 
-        result.Should().BeOfType<BadRequestObjectResult>();
+        result.Result.Should().BeOfType<BadRequestObjectResult>();
     }
 
     [Fact]
@@ -124,7 +123,9 @@ public class PlayersControllerTests
 
         var result = await _controller.SearchPlayers(request);
 
-        result.Should().BeOfType<OkObjectResult>();
+        result.Result.Should().BeOfType<OkObjectResult>();
+        var okResult = result.Result as OkObjectResult;
+        okResult!.Value.Should().BeEquivalentTo(new PlayerSearchDto(player));
         _playerServiceMock.Verify(s => s.GetPlayer(long.Parse(membershipId)), Times.Once);
     }
 
@@ -205,8 +206,8 @@ public class PlayersControllerTests
 
         var result = await _controller.GetPlayerReportsForActivity(playerId, activityId);
 
-        result.Should().BeOfType<OkObjectResult>();
-        var okResult = result as OkObjectResult;
+        result.Result.Should().BeOfType<OkObjectResult>();
+        var okResult = result.Result as OkObjectResult;
         okResult!.Value.Should().BeOfType<ActivityReportListDto>();
     }
 }

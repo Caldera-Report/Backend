@@ -75,7 +75,7 @@ public class LeaderboardServiceTests
         result.Should().NotBeEmpty();
         result.Should().HaveCount(2);
         result.First().Rank.Should().Be(1);
-        result.First().Player.DisplayName.Should().Be("Player1");
+        result.First().Player.FullDisplayName.Should().Be("Player1#1234");
     }
 
     [Fact]
@@ -197,8 +197,8 @@ public class LeaderboardServiceTests
 
         result.Should().NotBeEmpty();
         result.Should().HaveCount(2);
-        result.First(r => r.Player.DisplayName == "Player1").Rank.Should().Be(2);
-        result.First(r => r.Player.DisplayName == "Player2").Rank.Should().Be(3);
+        result.First(r => r.Player.FullDisplayName == "Player1#1234").Rank.Should().Be(2);
+        result.First(r => r.Player.FullDisplayName == "Player2#5678").Rank.Should().Be(3);
     }
 
     [Fact]
